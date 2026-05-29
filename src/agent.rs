@@ -26,13 +26,20 @@ pub async fn run_interactive(dir: &str, model: &str, thinking: bool) -> Result<(
     let client = CompletionsClient::from_env()?;
     let perm = permission::interactive();
 
-    let agent = client
+    let mut builder = client
         .agent(model)
         .preamble(SYSTEM_PROMPT)
         .tools(all_tools(dir, perm))
         .max_tokens(8192)
-        .default_max_turns(20)
-        .build();
+        .default_max_turns(20);
+
+    if thinking {
+        // Pass enable_thinking to the inference server via the flattened
+        // additional_params field (supported by vLLM, some Ollama builds, etc.).
+        builder = builder.additional_params(serde_json::json!({ "enable_thinking": true }));
+    }
+
+    let agent = builder.build();
 
     let mut session = Session::new(dir, model)?;
     let session_path = session.path.display().to_string();
@@ -77,46 +84,111 @@ pub async fn run_interactive(dir: &str, model: &str, thinking: bool) -> Result<(
     Ok(())
 }
 
-/// The tool-call tag emitted by local models as plain text before it is
-/// converted into a structured event.
-const TOOL_CALL_TAG: &str = "<tool_call>";
+/// Streams reasoning text to the terminal in real time with a `│ ` border on
+/// every line. Chunks are printed immediately — no buffering for whole lines.
+struct ThinkingPrinter {
+    started: bool,
+    at_line_start: bool,
+}
 
-/// Split `text` into the portion safe to display immediately and a look-ahead
-/// tail that must be held back until we can confirm it is not the start of
-/// `<tool_call>`.
-///
-/// Returns `(safe, tail)`:
-/// - `safe` — everything before any `<tool_call>` (or before a possible prefix)
-/// - `tail` — at most `TOOL_CALL_TAG.len()` chars held back
-///
-/// If the full tag is present in `text`, `tail` is empty and the caller should
-/// transition to `InToolCall`.
-fn split_safe(text: &str) -> (&str, &str) {
-    // Fast path: no `<` at all → nothing to hold back.
-    if !text.contains('<') {
-        return (text, "");
-    }
-    // Full tag present → safe is everything before it, tail is empty.
-    if let Some(pos) = text.find(TOOL_CALL_TAG) {
-        return (&text[..pos], "");
-    }
-    // Check whether the suffix of `text` is a prefix of the tag.
-    let tag = TOOL_CALL_TAG.as_bytes();
-    for hold in (1..tag.len().min(text.len()) + 1).rev() {
-        let suffix = &text[text.len() - hold..];
-        if TOOL_CALL_TAG.starts_with(suffix) {
-            return (&text[..text.len() - hold], &text[text.len() - hold..]);
+impl ThinkingPrinter {
+    fn new() -> Self {
+        Self {
+            started: false,
+            at_line_start: true,
         }
     }
-    (text, "")
+
+    fn feed(&mut self, chunk: &str) {
+        if chunk.is_empty() {
+            return;
+        }
+        if !self.started {
+            ui::stream_thinking_start();
+            self.started = true;
+        }
+        // Split on newlines; print the prefix at the start of each line.
+        let mut parts = chunk.split('\n');
+        if let Some(first) = parts.next() {
+            if !first.is_empty() {
+                if self.at_line_start {
+                    ui::stream_thinking_prefix();
+                    self.at_line_start = false;
+                }
+                ui::stream_thinking_chunk(first);
+            }
+            for part in parts {
+                // '\n' before each subsequent part
+                ui::stream_thinking_chunk("\n");
+                self.at_line_start = true;
+                if !part.is_empty() {
+                    ui::stream_thinking_prefix();
+                    self.at_line_start = false;
+                    ui::stream_thinking_chunk(part);
+                }
+            }
+        }
+        if chunk.ends_with('\n') {
+            self.at_line_start = true;
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.started {
+            ui::stream_thinking_end();
+            self.started = false;
+            self.at_line_start = true;
+        }
+    }
+}
+
+const TOOL_CALL_TAG: &str = "<tool_call>";
+const THINK_OPEN: &str = "<think>";
+const THINK_CLOSE: &str = "</think>";
+
+/// Return the length of the longest suffix of `text` that is a prefix of `needle`.
+fn suffix_prefix_len(text: &str, needle: &str) -> usize {
+    for len in (1..=needle.len().min(text.len())).rev() {
+        if text.ends_with(&needle[..len]) {
+            return len;
+        }
+    }
+    0
+}
+
+/// In normal streaming mode, find the first interesting tag (`<think>` or
+/// `<tool_call>`). Returns `(safe_to_display, tag_start, which_tag)` or
+/// `(safe, tail, "")` if no complete tag is present.
+fn scan_normal(text: &str) -> (&str, &str, &str) {
+    let think_pos = text.find(THINK_OPEN);
+    let tool_pos = text.find(TOOL_CALL_TAG);
+
+    match (think_pos, tool_pos) {
+        (Some(t), Some(tc)) => {
+            let first = t.min(tc);
+            let tag = if t <= tc { THINK_OPEN } else { TOOL_CALL_TAG };
+            (&text[..first], &text[first + tag.len()..], tag)
+        }
+        (Some(t), None) => (&text[..t], &text[t + THINK_OPEN.len()..], THINK_OPEN),
+        (None, Some(tc)) => (&text[..tc], &text[tc + TOOL_CALL_TAG.len()..], TOOL_CALL_TAG),
+        (None, None) => {
+            // No complete tag; hold back any potential partial tag at the end.
+            let hold = suffix_prefix_len(text, THINK_OPEN)
+                .max(suffix_prefix_len(text, TOOL_CALL_TAG));
+            (&text[..text.len() - hold], &text[text.len() - hold..], "")
+        }
+    }
 }
 
 enum StreamState {
-    /// Streaming text to the terminal; `tail` is a short look-ahead buffer
-    /// held back while we decide if it is the start of `<tool_call>`.
+    /// Streaming normal text; `tail` is held back while we confirm it is not
+    /// the start of `<think>` or `<tool_call>`.
     Streaming { tail: String },
-    /// A ToolCall/ToolCallDelta arrived — discard everything until the next
-    /// tool result, then reset to `Streaming`.
+    /// Inside `<think>…</think>` — route text to `ThinkingPrinter`.
+    /// `tail` guards against a partial `</think>` at the end of a chunk.
+    InThink { tail: String },
+    /// A structured ToolCall/ToolCallDelta arrived — discard text until the
+    /// next tool result, then reset to `Streaming`.
     InToolCall,
 }
 
@@ -133,47 +205,72 @@ async fn drive_stream(
     let mut state = StreamState::Streaming { tail: String::new() };
     let mut response_text = String::new();
     let mut response_started = false;
-    let mut thinking_started = false;
+    let mut thinker = ThinkingPrinter::new();
 
     while let Some(item) = stream.next().await {
         match item {
             Ok(MultiTurnStreamItem::StreamAssistantItem(content)) => {
                 match content {
                     StreamedAssistantContent::Text(text) => {
-                        if thinking_started {
-                            ui::stream_thinking_end();
-                            thinking_started = false;
-                        }
-                        if let StreamState::Streaming { ref mut tail } = state {
-                            // Prepend look-ahead tail to the new chunk.
-                            let mut combined = std::mem::take(tail);
-                            combined.push_str(&text.text);
+                        // Process the incoming chunk according to the current state.
+                        // We loop to handle a state transition mid-chunk (e.g. the
+                        // chunk contains both "</think>" and subsequent normal text).
+                        let mut remaining: String = text.text.clone();
+                        loop {
+                            if remaining.is_empty() {
+                                break;
+                            }
+                            match state {
+                                StreamState::Streaming { ref mut tail } => {
+                                    let mut combined = std::mem::take(tail);
+                                    combined.push_str(&remaining);
+                                    remaining = String::new();
 
-                            let (safe, new_tail) = split_safe(&combined);
+                                    let (safe, rest, tag) = scan_normal(&combined);
+                                    if !safe.is_empty() {
+                                        emit_text(safe, &mut response_started, &mut response_text);
+                                    }
+                                    match tag {
+                                        THINK_OPEN => {
+                                            state = StreamState::InThink { tail: String::new() };
+                                            remaining = rest.to_string();
+                                        }
+                                        TOOL_CALL_TAG => {
+                                            state = StreamState::InToolCall;
+                                            // rest is after the tool call tag — discard for now
+                                        }
+                                        _ => {
+                                            // no tag found; rest is the look-ahead tail
+                                            *tail = rest.to_string();
+                                        }
+                                    }
+                                }
+                                StreamState::InThink { ref mut tail } => {
+                                    let mut combined = std::mem::take(tail);
+                                    combined.push_str(&remaining);
+                                    remaining = String::new();
 
-                            // Check if the full tag was detected.
-                            if combined.contains(TOOL_CALL_TAG) {
-                                // Flush whatever came before the tag, then suppress.
-                                if !safe.is_empty() {
-                                    emit_text(
-                                        safe,
-                                        &mut response_started,
-                                        &mut response_text,
-                                    );
+                                    if let Some(pos) = combined.find(THINK_CLOSE) {
+                                        // Feed content before </think> to thinker, close it.
+                                        if thinking {
+                                            thinker.feed(&combined[..pos]);
+                                        }
+                                        thinker.finish();
+                                        let after = combined[pos + THINK_CLOSE.len()..].to_string();
+                                        state = StreamState::Streaming { tail: String::new() };
+                                        remaining = after; // process remainder as normal
+                                    } else {
+                                        // Hold back potential partial </think> at end.
+                                        let hold = suffix_prefix_len(&combined, THINK_CLOSE);
+                                        if thinking {
+                                            thinker.feed(&combined[..combined.len() - hold]);
+                                        }
+                                        *tail = combined[combined.len() - hold..].to_string();
+                                    }
                                 }
-                                state = StreamState::InToolCall;
-                            } else {
-                                if !safe.is_empty() {
-                                    emit_text(
-                                        safe,
-                                        &mut response_started,
-                                        &mut response_text,
-                                    );
-                                }
-                                *tail = new_tail.to_string();
+                                StreamState::InToolCall => break, // discard
                             }
                         }
-                        // In InToolCall: discard all text (still markup).
                     }
                     StreamedAssistantContent::ToolCallDelta { .. }
                     | StreamedAssistantContent::ToolCall { .. } => {
@@ -181,19 +278,11 @@ async fn drive_stream(
                         state = StreamState::InToolCall;
                     }
                     StreamedAssistantContent::ReasoningDelta { reasoning, .. } if thinking => {
-                        if !thinking_started {
-                            ui::stream_thinking_start();
-                            thinking_started = true;
-                        }
-                        ui::stream_thinking(&reasoning);
+                        thinker.feed(&reasoning);
                     }
                     StreamedAssistantContent::Reasoning(r) if thinking => {
-                        if !thinking_started {
-                            ui::stream_thinking_start();
-                        }
-                        ui::stream_thinking(&r.display_text());
-                        ui::stream_thinking_end();
-                        thinking_started = false;
+                        thinker.feed(&r.display_text());
+                        thinker.finish();
                     }
                     _ => {}
                 }
@@ -204,24 +293,37 @@ async fn drive_stream(
                 state = StreamState::Streaming { tail: String::new() };
             }
             Ok(MultiTurnStreamItem::FinalResponse(fin)) => {
-                // Flush the look-ahead tail (no full tag arrived, so it is safe).
-                if let StreamState::Streaming { ref tail } = state {
-                    if !tail.is_empty() {
+                // Flush any pending look-ahead tails.
+                match &state {
+                    StreamState::Streaming { tail } if !tail.is_empty() => {
                         emit_text(tail, &mut response_started, &mut response_text);
                     }
+                    StreamState::InThink { tail } => {
+                        if thinking && !tail.is_empty() {
+                            thinker.feed(tail);
+                        }
+                        thinker.finish();
+                    }
+                    _ => {}
                 }
                 handle_final(&fin, &mut response_text, history);
                 break;
             }
             Ok(_) => {}
             Err(e) => {
-                end_visual_state(response_started, thinking_started);
+                thinker.finish();
+                if response_started {
+                    ui::stream_response_end();
+                }
                 return Err(anyhow::anyhow!("{e}"));
             }
         }
     }
 
-    end_visual_state(response_started, thinking_started);
+    thinker.finish();
+    if response_started {
+        ui::stream_response_end();
+    }
     Ok(response_text)
 }
 
@@ -233,14 +335,6 @@ fn emit_text(chunk: &str, response_started: &mut bool, response_text: &mut Strin
     }
     ui::stream_text(chunk);
     response_text.push_str(chunk);
-}
-
-fn end_visual_state(response_started: bool, thinking_started: bool) {
-    if response_started {
-        ui::stream_response_end();
-    } else if thinking_started {
-        ui::stream_thinking_end();
-    }
 }
 
 

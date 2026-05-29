@@ -1,23 +1,153 @@
 use crossterm::{
+    cursor,
     execute, queue,
     style::{Color, Print, ResetColor, SetForegroundColor},
 };
 use std::io::{self, Write as IoWrite};
+use std::{thread, time::Duration};
 
 fn stdout() -> io::Stdout {
     io::stdout()
 }
 
+// ── Animated banner ───────────────────────────────────────────────────────────
+
+const ANIM_ROWS: u16 = 9;
+
+// Each frame is 9 rows × ~38 cols.  Special chars are coloured by color_for_char.
+// ·  ∘  ○ – rain drops (DarkGrey → Blue → Cyan)
+// / \ | _ V – outline (BrightBlue)
+// ◕ – eyes (Cyan)   ‿ – smile (White)
+static FRAMES: &[&[&str]] = &[
+    // 0 – rain at the top
+    &[
+        "  ·    ○    ·    ∘    ·    ○  ",
+        "    ○    ·    ○    ·    ∘     ",
+        "  ·    ∘    ·    ○    ·       ",
+        "                              ",
+        "                              ",
+        "                              ",
+        "                              ",
+        "                              ",
+        "                              ",
+    ],
+    // 1 – rain falls to the middle
+    &[
+        "                              ",
+        "                              ",
+        "  ○    ·    ○    ·    ∘    ·  ",
+        "    ·    ○    ·    ○    ·     ",
+        "  ○    ∘    ·    ○    ·       ",
+        "                              ",
+        "                              ",
+        "                              ",
+        "                              ",
+    ],
+    // 2 – drops converge toward centre
+    &[
+        "                              ",
+        "                              ",
+        "                              ",
+        "    ○  ·  ○  ·  ○  ·  ○      ",
+        "      ·  ○  ·  ○  ·  ○       ",
+        "        ○  ·  ○  ·            ",
+        "           ·  ○               ",
+        "                              ",
+        "                              ",
+    ],
+    // 3 – drops cluster into a drop outline
+    &[
+        "                              ",
+        "                              ",
+        "                              ",
+        "                              ",
+        "              ·               ",
+        "           ○     ○            ",
+        "          ○       ○           ",
+        "           ○     ○            ",
+        "              ○               ",
+    ],
+    // 4 – teardrop silhouette
+    &[
+        "                              ",
+        "                              ",
+        "              .               ",
+        "             / \\             ",
+        "            /   \\            ",
+        "            |   |             ",
+        "             \\ /             ",
+        "              V               ",
+        "                              ",
+    ],
+    // 5 – Kapitoshka face revealed
+    &[
+        "                              ",
+        "              .               ",
+        "             / \\             ",
+        "            /   \\            ",
+        "           / ◕ ◕ \\           ",
+        "           |  ‿  |            ",
+        "            \\   /            ",
+        "             \\_/             ",
+        "       kapitoshka agent       ",
+    ],
+];
+
+fn color_for_char(ch: char, frame_idx: usize) -> Option<Color> {
+    match ch {
+        '·' => Some(Color::DarkGrey),
+        '∘' => Some(Color::Blue),
+        '○' => Some(if frame_idx % 2 == 0 { Color::Cyan } else { Color::Blue }),
+        '/' | '\\' | '|' | '_' => Some(Color::Rgb { r: 64, g: 180, b: 255 }),
+        'V' => Some(Color::Blue),
+        '.' => Some(Color::White),
+        '◕' => Some(Color::Cyan),
+        '‿' => Some(Color::White),
+        _ => None,
+    }
+}
+
+fn draw_anim_frame(out: &mut io::Stdout, lines: &[&str], frame_idx: usize) {
+    for line in lines {
+        for ch in line.chars() {
+            if let Some(color) = color_for_char(ch, frame_idx) {
+                let _ = queue!(out, SetForegroundColor(color), Print(ch), ResetColor);
+            } else if frame_idx == FRAMES.len() - 1 {
+                // last frame: colour the "kapitoshka agent" label cyan
+                let _ = queue!(out, SetForegroundColor(Color::Cyan), Print(ch));
+            } else {
+                let _ = queue!(out, Print(ch));
+            }
+        }
+        let _ = queue!(out, ResetColor, Print('\n'));
+    }
+    let _ = out.flush();
+}
+
+fn run_drop_animation(out: &mut io::Stdout) {
+    // Reserve canvas
+    for _ in 0..ANIM_ROWS {
+        let _ = execute!(out, Print("\n"));
+    }
+
+    for (i, frame) in FRAMES.iter().enumerate() {
+        let _ = execute!(out, cursor::MoveUp(ANIM_ROWS));
+        draw_anim_frame(out, frame, i);
+        let delay = if i + 1 == FRAMES.len() { 350 } else { 130 };
+        thread::sleep(Duration::from_millis(delay));
+    }
+}
+
 pub fn print_banner(model: &str, dir: &str, session_path: &str, thinking: bool) {
     let thinking_label = if thinking { "  (thinking on)\n" } else { "" };
     let mut out = stdout();
+
+    let _ = execute!(out, cursor::Hide);
+    run_drop_animation(&mut out);
+    let _ = execute!(out, cursor::Show);
+
     let _ = execute!(
         out,
-        SetForegroundColor(Color::Cyan),
-        Print("╔══════════════════════════════════════╗\n"),
-        Print("║          kapitoshka agent            ║\n"),
-        Print("╚══════════════════════════════════════╝\n"),
-        ResetColor,
         Print(format!("  model : {model}\n")),
         Print(format!("  dir   : {dir}\n")),
         Print(format!("  log   : {session_path}\n")),
@@ -89,27 +219,40 @@ pub fn stream_response_end() {
     let _ = execute!(out, ResetColor, Print("\n"));
 }
 
-/// Print the "💭 thinking:" header before reasoning chunks.
+/// Print the thinking block header.
 pub fn stream_thinking_start() {
     let mut out = stdout();
     let _ = execute!(
         out,
         SetForegroundColor(Color::DarkGrey),
-        Print("\n💭 thinking:\n"),
+        Print("\n💭 thinking\n"),
     );
 }
 
-/// Stream a thinking/reasoning chunk, flushing immediately.
-pub fn stream_thinking(chunk: &str) {
+/// Print the `│ ` line prefix at the start of a new thinking line.
+pub fn stream_thinking_prefix() {
+    let mut out = stdout();
+    let _ = queue!(out, SetForegroundColor(Color::DarkGrey), Print("│ "));
+    let _ = out.flush();
+}
+
+/// Stream a raw chunk of thinking text (no prefix, no newline added), flushing immediately.
+pub fn stream_thinking_chunk(chunk: &str) {
     let mut out = stdout();
     let _ = queue!(out, SetForegroundColor(Color::DarkGrey), Print(chunk));
     let _ = out.flush();
 }
 
-/// Close the thinking section.
+/// Close the thinking block with a separator line.
 pub fn stream_thinking_end() {
     let mut out = stdout();
-    let _ = execute!(out, ResetColor, Print("\n"));
+    let _ = execute!(
+        out,
+        Print("\n"),
+        SetForegroundColor(Color::DarkGrey),
+        Print("└─────────────────────────────────────\n"),
+        ResetColor,
+    );
 }
 
 // ── Non-streaming fallback ────────────────────────────────────────────────────
