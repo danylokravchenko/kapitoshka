@@ -8,6 +8,70 @@ use std::process::Command;
 #[error("shell error: {0}")]
 pub struct ShellError(String);
 
+/// Maximum lines kept from stdout or stderr before truncation.
+const MAX_OUTPUT_LINES: usize = 200;
+
+/// Truncate output to at most `MAX_OUTPUT_LINES` lines, appending a note when cut.
+fn truncate_output(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= MAX_OUTPUT_LINES {
+        return text.to_owned();
+    }
+    let kept = &lines[..MAX_OUTPUT_LINES];
+    format!(
+        "{}\n[... {} lines truncated]",
+        kept.join("\n"),
+        lines.len() - MAX_OUTPUT_LINES
+    )
+}
+
+/// Commands whose output benefits from diagnostic-only filtering.
+/// Each entry is a prefix of the normalised command string.
+static VERBOSE_PREFIXES: &[&str] = &["cargo build", "cargo check", "cargo clippy", "cargo test"];
+
+/// For Rust toolchain commands, discard lines that are purely progress noise
+/// (the `Compiling …` / `Downloading …` / `Finished …` lines) and keep only
+/// lines that carry actionable information: errors, warnings, notes, and the
+/// final summary.
+///
+/// Returns `None` when the command is not in the verbose list, so the caller
+/// can fall back to the default truncation path.
+fn compact_cargo_output(command: &str, stdout: &str, stderr: &str) -> Option<String> {
+    let normalised = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !VERBOSE_PREFIXES.iter().any(|p| normalised.starts_with(p)) {
+        return None;
+    }
+
+    // Cargo writes diagnostics to stderr; stdout is usually empty for build commands.
+    let combined = format!("{stdout}{stderr}");
+    let kept: Vec<&str> = combined
+        .lines()
+        .filter(|line| {
+            let l = line.trim_start();
+            // Keep lines that carry signal; drop pure progress lines.
+            l.starts_with("error")
+                || l.starts_with("warning")
+                || l.starts_with("note")
+                || l.starts_with("help")
+                || l.starts_with("-->")
+                || l.starts_with("|")
+                || l.starts_with("=")
+                || l.starts_with("thread '")   // test panic output
+                || l.starts_with("FAILED")
+                || l.starts_with("test result")
+                || l.contains("error[")
+                || l.contains("warning[")
+        })
+        .collect();
+
+    if kept.is_empty() {
+        // Nothing filtered out means the build was clean — say so concisely.
+        return Some("(no errors or warnings)".to_owned());
+    }
+
+    Some(truncate_output(&kept.join("\n")))
+}
+
 /// Patterns that are never allowed regardless of context.
 /// Each entry is a (pattern, reason) pair. Matching is done on the
 /// normalised command string (collapsed whitespace, lowercased).
@@ -125,10 +189,19 @@ impl Tool for RunShell {
             .output()
             .map_err(|e| ShellError(e.to_string()))?;
 
+        let raw_stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let raw_stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        let exit_code = output.status.code().unwrap_or(-1);
+
+        let (stdout, stderr) = match compact_cargo_output(&args.command, &raw_stdout, &raw_stderr) {
+            Some(compacted) => (compacted, String::new()),
+            None => (truncate_output(&raw_stdout), truncate_output(&raw_stderr)),
+        };
+
         let result = ShellOutput {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            exit_code: output.status.code().unwrap_or(-1),
+            stdout,
+            stderr,
+            exit_code,
         };
 
         tracing::debug!(exit_code = result.exit_code, "shell command finished");
@@ -140,6 +213,82 @@ impl Tool for RunShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── truncate_output ───────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_keeps_short_output_intact() {
+        let text = "line1\nline2\nline3";
+        assert_eq!(truncate_output(text), text);
+    }
+
+    #[test]
+    fn truncate_cuts_at_max_lines() {
+        let text: String = (0..MAX_OUTPUT_LINES + 50)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let out = truncate_output(&text);
+        assert!(out.contains("[... 50 lines truncated]"));
+        assert_eq!(out.lines().count(), MAX_OUTPUT_LINES + 1); // lines + trailer
+    }
+
+    // ── compact_cargo_output ──────────────────────────────────────────────────
+
+    #[test]
+    fn compact_ignores_non_cargo_commands() {
+        assert!(compact_cargo_output("grep -r foo src/", "", "").is_none());
+        assert!(compact_cargo_output("echo hello", "hello", "").is_none());
+    }
+
+    #[test]
+    fn compact_strips_compiling_lines() {
+        let stderr = "   Compiling foo v0.1.0\n   Compiling bar v1.2.3\n    Finished dev\n";
+        let out = compact_cargo_output("cargo build", "", stderr).unwrap();
+        assert_eq!(out, "(no errors or warnings)");
+    }
+
+    #[test]
+    fn compact_keeps_errors_and_warnings() {
+        let stderr = concat!(
+            "   Compiling foo v0.1.0\n",
+            "error[E0308]: mismatched types\n",
+            " --> src/main.rs:5:10\n",
+            "  |\n",
+            "5 |     let x: i32 = \"hello\";\n",
+            "  |                  ^^^^^^^ expected `i32`, found `&str`\n",
+            "warning: unused variable `y`\n",
+            "    Finished dev\n",
+        );
+        let out = compact_cargo_output("cargo build", "", stderr).unwrap();
+        assert!(out.contains("error[E0308]"));
+        assert!(out.contains("warning: unused variable"));
+        assert!(!out.contains("Compiling"));
+        assert!(!out.contains("Finished"));
+    }
+
+    #[test]
+    fn compact_works_for_cargo_check_and_clippy() {
+        let stderr = "   Checking foo v0.1.0\nwarning: dead_code\n    Finished\n";
+        let out_check = compact_cargo_output("cargo check", "", stderr).unwrap();
+        let out_clippy = compact_cargo_output("cargo clippy", "", stderr).unwrap();
+        assert!(out_check.contains("warning: dead_code"));
+        assert!(out_clippy.contains("warning: dead_code"));
+    }
+
+    #[test]
+    fn compact_keeps_test_failures() {
+        let stdout = concat!(
+            "running 3 tests\n",
+            "test foo ... ok\n",
+            "test bar ... FAILED\n",
+            "test result: FAILED. 2 passed; 1 failed\n",
+        );
+        let out = compact_cargo_output("cargo test", stdout, "").unwrap();
+        assert!(out.contains("FAILED"));
+        assert!(out.contains("test result"));
+        assert!(!out.contains("test foo ... ok"));
+    }
 
     fn blocked(cmd: &str) -> bool {
         check_blocked(cmd).is_err()

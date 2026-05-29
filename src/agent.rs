@@ -23,6 +23,7 @@ pub async fn run(task: &str, dir: &str, model: &str) -> Result<String> {
         .agent(model)
         .tools(all_tools(dir))
         .max_tokens(8192)
+        .default_max_turns(20)
         .build();
 
     // Prepend the system prompt to the user task instead of using .preamble().
