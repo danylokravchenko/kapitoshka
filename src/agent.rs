@@ -8,14 +8,11 @@ use rig::streaming::{StreamedAssistantContent, StreamingChat};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 
+use crate::context;
 use crate::permission;
 use crate::session::Session;
 use crate::tools::all_tools;
 use crate::ui;
-
-/// Compaction threshold: when accumulated input tokens exceed this value we
-/// drop the oldest half of the history to free context space.
-const COMPACTION_THRESHOLD: u64 = 80_000;
 
 /// Tracks cumulative token usage across all turns in a session.
 #[derive(Debug, Default, Clone, Copy)]
@@ -41,19 +38,6 @@ impl ContextStats {
     }
 }
 
-/// Compact `history` by dropping the oldest half of messages when the last
-/// turn's `input_tokens` exceeds `COMPACTION_THRESHOLD`. Returns `true` if
-/// compaction occurred.
-pub fn maybe_compact(history: &mut Vec<Message>, last_input_tokens: u64) -> bool {
-    if last_input_tokens < COMPACTION_THRESHOLD || history.is_empty() {
-        return false;
-    }
-    let keep = history.len() / 2;
-    let drop_n = history.len() - keep;
-    history.drain(..drop_n);
-    true
-}
-
 const SYSTEM_PROMPT: &str = "\
 You are kapitoshka, an expert coding agent. You help users with software engineering tasks.
 
@@ -63,7 +47,12 @@ After making changes, verify them by reading the modified files or running relev
 
 Working directory is provided in the task. Use it as the root for all file operations.";
 
-pub async fn run_interactive(dir: &str, model: &str, thinking: bool, context_size: u64) -> Result<()> {
+pub async fn run_interactive(
+    dir: &str,
+    model: &str,
+    thinking: bool,
+    context_size: u64,
+) -> Result<()> {
     let client = CompletionsClient::from_env()?;
     let perm = permission::interactive();
 
@@ -90,6 +79,9 @@ pub async fn run_interactive(dir: &str, model: &str, thinking: bool, context_siz
     // Conversation history managed manually so we can append new messages
     // from each turn's FinalResponse.
     let mut history: Vec<Message> = Vec::new();
+    // Scratchpad accumulates summaries from compaction and is prepended to
+    // every request so the model retains context across compaction boundaries.
+    let mut scratchpad = String::new();
     let mut ctx = ContextStats::new();
     let mut rl = DefaultEditor::new()?;
 
@@ -109,12 +101,35 @@ pub async fn run_interactive(dir: &str, model: &str, thinking: bool, context_siz
                 session.log_user(&line)?;
                 ui::print_working();
 
-                let mut stream = agent.stream_chat(line.as_str(), &history).await;
+                // Prepend the scratchpad as a pseudo-message so the model
+                // retains summarised context even after compaction.
+                // fin.history() returns only NEW messages so history stays clean.
+                let effective_history = build_effective_history(&history, &scratchpad);
+                let mut stream = agent.stream_chat(line.as_str(), &effective_history).await;
 
                 match drive_stream(&mut stream, thinking, &mut history, &mut ctx).await {
                     Ok((text, last_usage)) => {
                         session.log_agent(&text)?;
-                        let compacted = maybe_compact(&mut history, last_usage.input_tokens);
+
+                        // 1. Compress old tool results (cheap, no model call).
+                        context::compress_tool_results(&mut history);
+
+                        // 2. Summarise + compact if context is filling up.
+                        let compacted =
+                            if context::needs_compaction(last_usage.input_tokens, context_size) {
+                                ui::print_compacting();
+                                context::compact_with_summary(
+                                    &mut history,
+                                    &mut scratchpad,
+                                    &client,
+                                    model,
+                                )
+                                .await
+                                .unwrap_or(false)
+                            } else {
+                                false
+                            };
+
                         ui::print_context_stats(
                             ctx.input_tokens,
                             ctx.output_tokens,
@@ -405,6 +420,19 @@ fn emit_text(chunk: &str, response_started: &mut bool, response_text: &mut Strin
     response_text.push_str(chunk);
 }
 
+/// Prepend a scratchpad message to history when one exists.
+/// This keeps `history` clean (only real messages) while still giving the
+/// model access to summarised context from previous compaction cycles.
+fn build_effective_history(history: &[Message], scratchpad: &str) -> Vec<Message> {
+    if scratchpad.is_empty() {
+        return history.to_vec();
+    }
+    let mut effective = Vec::with_capacity(history.len() + 1);
+    effective.push(Message::user(format!("[Session Memory]\n{scratchpad}")));
+    effective.extend_from_slice(history);
+    effective
+}
+
 fn handle_final(
     fin: &FinalResponse,
     response_text: &mut String,
@@ -441,7 +469,10 @@ mod tests {
     fn suffix_prefix_full_needle_length() {
         // When text ends with the complete needle, the full needle length is returned.
         // scan_normal's find() catches complete tags first, so this only guards edge cases.
-        assert_eq!(suffix_prefix_len("foo <think>", "<think>"), THINK_OPEN.len());
+        assert_eq!(
+            suffix_prefix_len("foo <think>", "<think>"),
+            THINK_OPEN.len()
+        );
     }
 
     #[test]
@@ -535,36 +566,42 @@ mod tests {
         assert_eq!(ctx.total_tokens, 0);
     }
 
-    // ── maybe_compact ────────────────────────────────────────────────────────
+    // ── build_effective_history ──────────────────────────────────────────────
 
-    fn make_messages(n: usize) -> Vec<Message> {
-        (0..n).map(|i| Message::user(format!("msg {i}"))).collect()
+    #[test]
+    fn effective_history_no_scratchpad_is_clone() {
+        let history = vec![Message::user("hello"), Message::user("world")];
+        let eff = build_effective_history(&history, "");
+        assert_eq!(eff.len(), history.len());
     }
 
     #[test]
-    fn compact_below_threshold_noop() {
-        let mut history = make_messages(10);
-        let compacted = maybe_compact(&mut history, COMPACTION_THRESHOLD - 1);
-        assert!(!compacted);
-        assert_eq!(history.len(), 10);
-    }
-
-    #[test]
-    fn compact_at_threshold_drops_oldest_half() {
-        let mut history = make_messages(10);
-        let compacted = maybe_compact(&mut history, COMPACTION_THRESHOLD);
-        assert!(compacted);
-        assert_eq!(history.len(), 5);
-        // The 5 kept messages are the newest half (original indices 5-9).
-        // Verify the first kept message is "msg 5" by checking its text content.
-        match history[0].clone() {
+    fn effective_history_prepends_scratchpad_message() {
+        let history = vec![Message::user("task")];
+        let eff = build_effective_history(&history, "- prior fact");
+        assert_eq!(eff.len(), 2);
+        match &eff[0] {
             Message::User { content } => {
                 let first = content.first();
                 match first {
                     rig::completion::message::UserContent::Text(t) => {
-                        assert!(t.text.contains('5'), "expected msg 5, got: {}", t.text);
+                        assert!(t.text.contains("[Session Memory]"));
+                        assert!(t.text.contains("prior fact"));
                     }
-                    _ => panic!("expected text content"),
+                    _ => panic!("expected text"),
+                }
+            }
+            _ => panic!("expected User message"),
+        }
+        // Original history follows unchanged.
+        match &eff[1] {
+            Message::User { content } => {
+                let first = content.first();
+                match first {
+                    rig::completion::message::UserContent::Text(t) => {
+                        assert_eq!(t.text, "task");
+                    }
+                    _ => panic!("expected text"),
                 }
             }
             _ => panic!("expected User message"),
@@ -572,18 +609,9 @@ mod tests {
     }
 
     #[test]
-    fn compact_empty_history_noop() {
-        let mut history: Vec<Message> = Vec::new();
-        let compacted = maybe_compact(&mut history, COMPACTION_THRESHOLD + 1);
-        assert!(!compacted);
-        assert!(history.is_empty());
-    }
-
-    #[test]
-    fn compact_odd_length_keeps_ceil_half() {
-        let mut history = make_messages(7);
-        maybe_compact(&mut history, COMPACTION_THRESHOLD);
-        // 7 / 2 = 3 kept (integer division), dropping 4
-        assert_eq!(history.len(), 3);
+    fn effective_history_does_not_mutate_original() {
+        let history = vec![Message::user("a"), Message::user("b")];
+        let _ = build_effective_history(&history, "memo");
+        assert_eq!(history.len(), 2);
     }
 }

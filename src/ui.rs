@@ -165,6 +165,16 @@ pub fn print_banner(model: &str, dir: &str, session_path: &str, thinking: bool) 
     );
 }
 
+pub fn print_compacting() {
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::DarkGrey),
+        Print("✂  compacting context…\n"),
+        ResetColor,
+    );
+}
+
 pub fn print_working() {
     let mut out = stdout();
     let _ = execute!(
@@ -276,6 +286,7 @@ pub fn print_response(text: &str) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn print_context_stats(
     input_tokens: u64,
     output_tokens: u64,
@@ -287,7 +298,11 @@ pub fn print_context_stats(
     compacted: bool,
 ) {
     let mut out = stdout();
-    let compacted_label = if compacted { "  ✂ history compacted\n" } else { "" };
+    let compacted_label = if compacted {
+        "  ✂ history compacted\n"
+    } else {
+        ""
+    };
     let _ = execute!(
         out,
         SetForegroundColor(Color::DarkGrey),

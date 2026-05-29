@@ -18,25 +18,42 @@ export OPENAI_BASE_URL=http://127.0.0.1:8080/v1  # omit to use OpenAI directly
 ## Usage
 
 ```bash
-cargo run -- --task "add error handling to the database module" --dir /path/to/project
+cargo run -- --dir /path/to/project --model my-model
 ```
 
 ### Options
 
 | Flag | Short | Default | Description |
 | ------ | ------- | --------- | ------------- |
-| `--task` | `-t` | *(required)* | The task for the agent to perform |
 | `--dir` | `-d` | `.` | Working directory (root for all file operations) |
 | `--model` | `-m` | `Qwen3-0.6B` | Model name to use |
+| `--thinking` | | off | Display the model's internal reasoning (requires model support) |
+| `--context-size` | | `0` | Context window size in tokens — enables fill-% display and automatic compaction |
 
-### Tracing
+### Context management
 
-Logs are written to stderr. Control verbosity with `RUST_LOG`:
+Kapitoshka tracks context window usage and manages history automatically.
 
-```bash
-RUST_LOG=debug cargo run -- --task "..."   # verbose: shows every tool call
-RUST_LOG=info  cargo run -- --task "..."   # default: task start + tool names
-RUST_LOG=error cargo run -- --task "..."   # quiet: errors only
+**Usage stats** are printed after every response:
+
+```text
+  ctx  in:4820  out:312  total:5132  37% of 131k
+```
+
+The percentage requires `--context-size` to be set to your model's context window (e.g. `131072`).
+
+**Automatic compaction** fires when context fill reaches 75% (or 80 000 tokens if `--context-size` is not set). It:
+
+1. **Summarises** the middle section of history by asking the model to produce a concise bullet-point summary of files touched, commands run, and decisions made.
+2. **Keeps** the first turn (task context) and the last 8 messages (recent work) intact — only the middle is replaced.
+3. **Compresses** tool results older than the last 8 messages to 400 characters, recovering the bulk of context consumed by large file reads.
+4. **Injects the summary** as working memory into every subsequent request so the model retains context across compaction boundaries.
+
+When compaction runs you will see:
+
+```text
+✂  compacting context…
+  ctx  in:…  out:…  total:…  ✂ history compacted
 ```
 
 ## Tools

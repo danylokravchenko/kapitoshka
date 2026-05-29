@@ -1,4 +1,5 @@
 mod agent;
+mod context;
 mod permission;
 mod session;
 mod tools;
