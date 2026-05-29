@@ -6,7 +6,6 @@ A coding agent built in Rust. It connects to any OpenAI-compatible inference ser
 
 ## Requirements
 
-- Rust 1.85+
 - An OpenAI-compatible inference server (OpenAI, Ollama, vLLM, LM Studio, llama.cpp, etc.)
 
 ## Setup
@@ -44,12 +43,29 @@ RUST_LOG=error cargo run -- --task "..."   # quiet: errors only
 
 | Tool | Description |
 | ------ | ------------- |
-| `read_file` | Read the contents of a file |
-| `write_file` | Write content to a file (creates missing directories) |
+| `read_file` | Read a file, optionally limited to a line range (`start_line`, `end_line`) to avoid flooding the context window |
+| `write_file` | Write content to a file (creates missing directories). Full overwrite — prefer `patch_file` for edits |
+| `patch_file` | Replace an exact string in a file with new content. Errors if the match is ambiguous or missing |
 | `list_dir` | List directory contents |
-| `run_shell` | Run a shell command (e.g. `cargo test`, `grep -r foo src/`) |
+| `search_file` | Search for a literal string in a file and return matching lines with line numbers |
+| `run_shell` | Run a shell command (e.g. `cargo test`, `grep -r foo src/`). Destructive commands are blocked |
 
 All file paths are resolved relative to `--dir`.
+
+### Shell safety
+
+`run_shell` enforces a blocklist before executing any command. The following are blocked unconditionally:
+
+| Category | Examples |
+| --------- | -------- |
+| Filesystem destruction | `rm -rf /`, `mkfs`, `dd if=`, `> /dev/sda` |
+| Privilege escalation | `sudo`, `su -`, `pkexec` |
+| Outbound network | `curl`, `wget`, `ssh`, `scp`, `rsync`, `nc` |
+| Irreversible git | `git push` (any form) |
+| Resource exhaustion | fork bombs |
+| Shell escapes | `eval`, `exec` |
+
+Safe commands such as `cargo test`, `git status`, `grep`, and `rm -rf target/` pass through unaffected.
 
 ## License
 
