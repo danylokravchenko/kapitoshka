@@ -23,7 +23,7 @@ tracing-appender = "0.2.5"
 crossterm = "0.29.0"
 rustyline = "18.0.0"
 chrono = "0.4.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 thiserror = "2.0.18"
 
 [dev-dependencies]

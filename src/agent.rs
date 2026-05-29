@@ -1,12 +1,13 @@
 use anyhow::Result;
 use futures::StreamExt;
-use rig::agent::{FinalResponse, MultiTurnStreamItem};
+use rig::agent::{Agent, FinalResponse, MultiTurnStreamItem};
 use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::{Message, Usage};
-use rig::providers::openai::CompletionsClient;
+use rig::completion::{CompletionModel, Message, Usage};
+use rig::providers::{anthropic, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingChat};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use tracing::Instrument as _;
 
 use crate::context;
 use crate::permission;
@@ -50,30 +51,67 @@ Working directory is provided in the task. Use it as the root for all file opera
 pub async fn run_interactive(
     dir: &str,
     model: &str,
+    provider: &str,
     thinking: bool,
     context_size: u64,
+    session_id: &str,
 ) -> Result<()> {
-    let client = CompletionsClient::from_env()?;
-    let perm = permission::interactive();
+    let session = Session::new(dir, model)?;
+    let session_span = tracing::info_span!("session", id = %session_id, dir = %dir, model = %model);
 
-    let mut builder = client
-        .agent(model)
-        .preamble(SYSTEM_PROMPT)
-        .tools(all_tools(dir, perm))
-        .max_tokens(8192)
-        .default_max_turns(20);
-
-    if thinking {
-        // Pass enable_thinking to the inference server via the flattened
-        // additional_params field (supported by vLLM, some Ollama builds, etc.).
-        builder = builder.additional_params(serde_json::json!({ "enable_thinking": true }));
+    match provider {
+        "anthropic" => {
+            let client = anthropic::Client::from_env()?;
+            let perm = permission::interactive();
+            let agent = client
+                .agent(model)
+                .preamble(SYSTEM_PROMPT)
+                .tools(all_tools(dir, perm))
+                .max_tokens(8192)
+                .default_max_turns(20)
+                .build();
+            run_loop(agent, client, dir, model, thinking, context_size, session)
+                .instrument(session_span)
+                .await
+        }
+        _ => {
+            let client = openai::CompletionsClient::from_env()?;
+            let perm = permission::interactive();
+            let mut builder = client
+                .agent(model)
+                .preamble(SYSTEM_PROMPT)
+                .tools(all_tools(dir, perm))
+                .max_tokens(8192)
+                .default_max_turns(20);
+            if thinking {
+                // Pass enable_thinking to the inference server via the flattened
+                // additional_params field (supported by vLLM, some Ollama builds, etc.).
+                builder = builder.additional_params(serde_json::json!({ "enable_thinking": true }));
+            }
+            let agent = builder.build();
+            run_loop(agent, client, dir, model, thinking, context_size, session)
+                .instrument(session_span)
+                .await
+        }
     }
+}
 
-    let agent = builder.build();
-
-    let mut session = Session::new(dir, model)?;
+async fn run_loop<M, C>(
+    agent: Agent<M>,
+    client: C,
+    dir: &str,
+    model: &str,
+    thinking: bool,
+    context_size: u64,
+    mut session: Session,
+) -> Result<()>
+where
+    M: CompletionModel + 'static,
+    Agent<M>: StreamingChat<M, M::StreamingResponse>,
+    C: CompletionClient + Clone + Send + Sync + 'static,
+    C::CompletionModel: CompletionModel + 'static,
+{
     let session_path = session.path.display().to_string();
-
     ui::print_banner(model, dir, &session_path, thinking);
 
     // Conversation history managed manually so we can append new messages
@@ -101,13 +139,22 @@ pub async fn run_interactive(
                 session.log_user(&line)?;
                 ui::print_working();
 
+                let turn_span = tracing::info_span!(
+                    "turn",
+                    history_len = history.len(),
+                    input_tokens = ctx.input_tokens,
+                );
+
                 // Prepend the scratchpad as a pseudo-message so the model
                 // retains summarised context even after compaction.
                 // fin.history() returns only NEW messages so history stays clean.
                 let effective_history = build_effective_history(&history, &scratchpad);
                 let mut stream = agent.stream_chat(line.as_str(), &effective_history).await;
 
-                match drive_stream(&mut stream, thinking, &mut history, &mut ctx).await {
+                match drive_stream(&mut stream, thinking, &mut history, &mut ctx)
+                    .instrument(turn_span)
+                    .await
+                {
                     Ok((text, last_usage)) => {
                         session.log_agent(&text)?;
 
@@ -117,15 +164,25 @@ pub async fn run_interactive(
                         // 2. Summarise + compact if context is filling up.
                         let compacted =
                             if context::needs_compaction(last_usage.input_tokens, context_size) {
+                                tracing::info!(
+                                    input_tokens = last_usage.input_tokens,
+                                    context_size,
+                                    history_len = history.len(),
+                                    "compacting context"
+                                );
                                 ui::print_compacting();
-                                context::compact_with_summary(
+                                let did_compact = context::compact_with_summary(
                                     &mut history,
                                     &mut scratchpad,
                                     &client,
                                     model,
                                 )
                                 .await
-                                .unwrap_or(false)
+                                .unwrap_or(false);
+                                if did_compact {
+                                    tracing::info!(history_len = history.len(), "compaction done");
+                                }
+                                did_compact
                             } else {
                                 false
                             };
@@ -141,7 +198,10 @@ pub async fn run_interactive(
                             compacted,
                         );
                     }
-                    Err(e) => ui::print_error(&e.to_string()),
+                    Err(e) => {
+                        tracing::error!(error = %e, "turn failed");
+                        ui::print_error(&e.to_string());
+                    }
                 }
             }
             Err(ReadlineError::Eof | ReadlineError::Interrupted) => break,
@@ -267,10 +327,8 @@ enum StreamState {
 /// Consume the streaming response, printing text/thinking chunks to the
 /// terminal as they arrive. Updates `history` and `ctx` from the `FinalResponse`.
 /// Returns `(response_text, last_turn_usage)` for session logging and compaction.
-async fn drive_stream(
-    stream: &mut rig::agent::StreamingResult<
-        <rig::providers::openai::GenericCompletionModel as rig::completion::CompletionModel>::StreamingResponse,
-    >,
+async fn drive_stream<R>(
+    stream: &mut rig::agent::StreamingResult<R>,
     thinking: bool,
     history: &mut Vec<Message>,
     ctx: &mut ContextStats,
@@ -394,6 +452,7 @@ async fn drive_stream(
             }
             Ok(_) => {}
             Err(e) => {
+                tracing::error!(error = %e, "stream error");
                 thinker.finish();
                 if response_started {
                     ui::stream_response_end();

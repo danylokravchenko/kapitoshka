@@ -2,9 +2,9 @@ use anyhow::Result;
 use rig::OneOrMany;
 use rig::client::CompletionClient;
 use rig::completion::Chat;
+use rig::completion::CompletionModel;
 use rig::completion::Message;
 use rig::completion::message::{AssistantContent, ToolResult, ToolResultContent, UserContent};
-use rig::providers::openai::CompletionsClient;
 
 /// Messages from the start of history that are never dropped (first user turn).
 pub const KEEP_FIRST: usize = 2;
@@ -58,12 +58,16 @@ pub fn compress_tool_results(history: &mut [Message]) {
 /// The middle section is summarised by the model; the summary replaces the
 /// dropped messages and is stored in `scratchpad` for injection into future
 /// requests. Returns `true` if compaction was performed.
-pub async fn compact_with_summary(
+pub async fn compact_with_summary<C>(
     history: &mut Vec<Message>,
     scratchpad: &mut String,
-    client: &CompletionsClient,
+    client: &C,
     model: &str,
-) -> Result<bool> {
+) -> Result<bool>
+where
+    C: CompletionClient,
+    C::CompletionModel: CompletionModel + 'static,
+{
     if history.len() <= KEEP_FIRST + KEEP_LAST {
         return Ok(false);
     }
@@ -175,7 +179,11 @@ fn format_for_summary(messages: &[Message], existing_scratchpad: &str) -> String
     out
 }
 
-async fn call_summarize(client: &CompletionsClient, model: &str, text: &str) -> Result<String> {
+async fn call_summarize<C>(client: &C, model: &str, text: &str) -> Result<String>
+where
+    C: CompletionClient,
+    C::CompletionModel: CompletionModel + 'static,
+{
     let agent = client.agent(model).preamble(SUMMARIZE_PREAMBLE).build();
     let mut history = Vec::new();
     let summary = agent

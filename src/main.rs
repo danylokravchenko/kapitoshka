@@ -20,6 +20,10 @@ struct Cli {
     #[arg(short, long, default_value = "Qwen3-0.6B")]
     model: String,
 
+    /// Provider backend: "openai" (default, works with any OpenAI-compatible server) or "anthropic"
+    #[arg(short, long, default_value = "openai")]
+    provider: String,
+
     /// Show the model's internal reasoning/thinking if the model supports it
     #[arg(long)]
     thinking: bool,
@@ -33,9 +37,32 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let _trace_guard = trace::init();
+    let _trace_guards = trace::init();
 
-    tracing::info!(dir = %cli.dir, model = %cli.model, thinking = cli.thinking, "starting agent");
+    // Short hex ID derived from the current timestamp for log correlation.
+    let session_id = format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    );
 
-    agent::run_interactive(&cli.dir, &cli.model, cli.thinking, cli.context_size).await
+    tracing::info!(
+        session = %session_id,
+        dir = %cli.dir,
+        model = %cli.model,
+        thinking = cli.thinking,
+        "starting agent"
+    );
+
+    agent::run_interactive(
+        &cli.dir,
+        &cli.model,
+        &cli.provider,
+        cli.thinking,
+        cli.context_size,
+        &session_id,
+    )
+    .await
 }

@@ -26,6 +26,7 @@ cargo run -- --dir /path/to/project --model my-model
 | Flag | Short | Default | Description |
 | ------ | ------- | --------- | ------------- |
 | `--dir` | `-d` | `.` | Working directory (root for all file operations) |
+| `--provider` | `-p` | `openai` | Model provider |
 | `--model` | `-m` | `Qwen3-0.6B` | Model name to use |
 | `--thinking` | | off | Display the model's internal reasoning (requires model support) |
 | `--context-size` | | `0` | Context window size in tokens — enables fill-% display and automatic compaction |
