@@ -1,8 +1,11 @@
+use crate::permission::PermissionHandler;
+use crate::ui;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 #[error("fs error: {0}")]
@@ -79,6 +82,8 @@ impl Tool for ReadFile {
         let path = resolve(&self.working_dir, &args.path);
         tracing::info!(path = %path.display(), start = ?args.start_line, end = ?args.end_line, "reading file");
 
+        ui::print_tool_action("read_file", &args.path);
+
         let content = std::fs::read_to_string(&path)
             .map_err(|e| FsError(format!("{}: {e}", path.display())))?;
 
@@ -117,12 +122,14 @@ pub struct WriteFileArgs {
 
 pub struct WriteFile {
     working_dir: String,
+    permission: PermissionHandler,
 }
 
 impl WriteFile {
-    pub fn new(working_dir: &str) -> Self {
+    pub fn new(working_dir: &str, permission: PermissionHandler) -> Self {
         Self {
             working_dir: working_dir.to_string(),
+            permission,
         }
     }
 }
@@ -153,6 +160,21 @@ impl Tool for WriteFile {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let path = resolve(&self.working_dir, &args.path);
+
+        let summary = format!("{} ({} bytes)", args.path, args.content.len());
+        ui::print_tool_action("write_file", &summary);
+
+        let handler = Arc::clone(&self.permission);
+        let path_clone = args.path.clone();
+        let allowed = tokio::task::spawn_blocking(move || {
+            handler("write_file", &format!("overwrite {path_clone}"))
+        })
+        .await
+        .map_err(|e| FsError(format!("permission task failed: {e}")))?;
+        if !allowed {
+            return Err(FsError("permission denied by user".to_string()));
+        }
+
         tracing::info!(path = %path.display(), "writing file");
 
         if let Some(parent) = path.parent() {
@@ -184,12 +206,14 @@ pub struct PatchFileArgs {
 
 pub struct PatchFile {
     working_dir: String,
+    permission: PermissionHandler,
 }
 
 impl PatchFile {
-    pub fn new(working_dir: &str) -> Self {
+    pub fn new(working_dir: &str, permission: PermissionHandler) -> Self {
         Self {
             working_dir: working_dir.to_string(),
+            permission,
         }
     }
 }
@@ -231,6 +255,29 @@ impl Tool for PatchFile {
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         let path = resolve(&self.working_dir, &args.path);
+
+        let preview: String = args
+            .old_str
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .take(60)
+            .collect();
+        let summary = format!("{} — «{preview}…»", args.path);
+        ui::print_tool_action("patch_file", &summary);
+
+        let handler = Arc::clone(&self.permission);
+        let path_clone = args.path.clone();
+        let allowed = tokio::task::spawn_blocking(move || {
+            handler("patch_file", &format!("edit {path_clone}"))
+        })
+        .await
+        .map_err(|e| FsError(format!("permission task failed: {e}")))?;
+        if !allowed {
+            return Err(FsError("permission denied by user".to_string()));
+        }
+
         tracing::info!(path = %path.display(), "patching file");
 
         let content = std::fs::read_to_string(&path)
@@ -307,6 +354,8 @@ impl Tool for ListDir {
         let dir = args.path.as_deref().unwrap_or(".");
         let path = resolve(&self.working_dir, dir);
         tracing::info!(path = %path.display(), "listing directory");
+
+        ui::print_tool_action("list_dir", dir);
 
         let entries =
             std::fs::read_dir(&path).map_err(|e| FsError(format!("{}: {e}", path.display())))?;
@@ -387,6 +436,8 @@ impl Tool for SearchFile {
         let path = resolve(&self.working_dir, &args.path);
         tracing::info!(path = %path.display(), pattern = %args.pattern, "searching file");
 
+        ui::print_tool_action("search_file", &format!("{} «{}»", args.path, args.pattern));
+
         let content = std::fs::read_to_string(&path)
             .map_err(|e| FsError(format!("{}: {e}", path.display())))?;
 
@@ -416,6 +467,10 @@ mod tests {
         let path = dir.path().join(name);
         fs::write(&path, content).unwrap();
         path.to_string_lossy().into_owned()
+    }
+
+    fn test_permission() -> PermissionHandler {
+        Arc::new(|_tool: &str, _action: &str| true)
     }
 
     // ── read_file ─────────────────────────────────────────────────────────────
@@ -495,7 +550,7 @@ mod tests {
     async fn patch_file_replaces_match() {
         let dir = TempDir::new().unwrap();
         temp_file(&dir, "e.txt", "foo bar baz\n");
-        let tool = PatchFile::new(dir.path().to_str().unwrap());
+        let tool = PatchFile::new(dir.path().to_str().unwrap(), test_permission());
         tool.call(PatchFileArgs {
             path: "e.txt".into(),
             old_str: "bar".into(),
@@ -511,7 +566,7 @@ mod tests {
     async fn patch_file_errors_when_not_found() {
         let dir = TempDir::new().unwrap();
         temp_file(&dir, "f.txt", "hello world\n");
-        let tool = PatchFile::new(dir.path().to_str().unwrap());
+        let tool = PatchFile::new(dir.path().to_str().unwrap(), test_permission());
         let err = tool
             .call(PatchFileArgs {
                 path: "f.txt".into(),
@@ -527,7 +582,7 @@ mod tests {
     async fn patch_file_errors_on_ambiguous_match() {
         let dir = TempDir::new().unwrap();
         temp_file(&dir, "g.txt", "foo foo foo\n");
-        let tool = PatchFile::new(dir.path().to_str().unwrap());
+        let tool = PatchFile::new(dir.path().to_str().unwrap(), test_permission());
         let err = tool
             .call(PatchFileArgs {
                 path: "g.txt".into(),
@@ -543,7 +598,7 @@ mod tests {
     async fn patch_file_multiline() {
         let dir = TempDir::new().unwrap();
         temp_file(&dir, "h.txt", "fn old() {\n    todo!()\n}\n");
-        let tool = PatchFile::new(dir.path().to_str().unwrap());
+        let tool = PatchFile::new(dir.path().to_str().unwrap(), test_permission());
         tool.call(PatchFileArgs {
             path: "h.txt".into(),
             old_str: "fn old() {\n    todo!()\n}".into(),

@@ -1,6 +1,9 @@
 mod agent;
+mod permission;
+mod session;
 mod tools;
 mod trace;
+mod ui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -8,10 +11,6 @@ use clap::Parser;
 #[derive(Parser)]
 #[command(name = "kapitoshka", about = "A coding agent powered by rig")]
 struct Cli {
-    /// The task to perform
-    #[arg(short, long)]
-    task: String,
-
     /// Working directory for the agent
     #[arg(short, long, default_value = ".")]
     dir: String,
@@ -25,13 +24,9 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    trace::init();
+    let _trace_guard = trace::init();
 
-    tracing::info!(task = %cli.task, dir = %cli.dir, model = %cli.model, "starting agent");
+    tracing::info!(dir = %cli.dir, model = %cli.model, "starting agent");
 
-    let result = agent::run(&cli.task, &cli.dir, &cli.model).await?;
-
-    println!("\n{result}");
-
-    Ok(())
+    agent::run_interactive(&cli.dir, &cli.model).await
 }

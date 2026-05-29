@@ -1,8 +1,11 @@
+use crate::permission::PermissionHandler;
+use crate::ui;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::process::Command;
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 #[error("shell error: {0}")]
@@ -139,12 +142,14 @@ pub struct ShellOutput {
 
 pub struct RunShell {
     working_dir: String,
+    permission: PermissionHandler,
 }
 
 impl RunShell {
-    pub fn new(working_dir: &str) -> Self {
+    pub fn new(working_dir: &str, permission: PermissionHandler) -> Self {
         Self {
             working_dir: working_dir.to_string(),
+            permission,
         }
     }
 }
@@ -180,6 +185,17 @@ impl Tool for RunShell {
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
         check_blocked(&args.command)?;
 
+        ui::print_tool_action("run_shell", &args.command);
+
+        let handler = Arc::clone(&self.permission);
+        let command_clone = args.command.clone();
+        let allowed = tokio::task::spawn_blocking(move || handler("run_shell", &command_clone))
+            .await
+            .map_err(|e| ShellError(format!("permission task failed: {e}")))?;
+        if !allowed {
+            return Err(ShellError("permission denied by user".to_string()));
+        }
+
         tracing::info!(command = %args.command, "running shell command");
 
         let output = Command::new("sh")
@@ -213,6 +229,10 @@ impl Tool for RunShell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_permission() -> PermissionHandler {
+        Arc::new(|_tool: &str, _action: &str| true)
+    }
 
     // ── truncate_output ───────────────────────────────────────────────────────
 
@@ -393,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn executes_safe_command() {
-        let tool = RunShell::new(".");
+        let tool = RunShell::new(".", test_permission());
         let out = tool
             .call(RunShellArgs {
                 command: "echo hello".into(),
@@ -406,7 +426,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_nonzero_exit_on_failure() {
-        let tool = RunShell::new(".");
+        let tool = RunShell::new(".", test_permission());
         let out = tool
             .call(RunShellArgs {
                 command: "exit 42".into(),
@@ -418,7 +438,7 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_command_returns_err_not_output() {
-        let tool = RunShell::new(".");
+        let tool = RunShell::new(".", test_permission());
         let err = tool
             .call(RunShellArgs {
                 command: "sudo ls".into(),
