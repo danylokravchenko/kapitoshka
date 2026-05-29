@@ -1,12 +1,10 @@
 use anyhow::Result;
 use chrono::Local;
-use rig::completion::Message;
 use std::fs::{self, File};
 use std::io::Write as IoWrite;
 use std::path::PathBuf;
 
 pub struct Session {
-    pub history: Vec<Message>,
     pub path: PathBuf,
     file: File,
 }
@@ -25,11 +23,7 @@ impl Session {
         writeln!(file, "# Session {}", now.format("%Y-%m-%d %H:%M:%S"))?;
         writeln!(file, "model: {model}  dir: {dir}\n")?;
 
-        Ok(Self {
-            history: Vec::new(),
-            path,
-            file,
-        })
+        Ok(Self { path, file })
     }
 
     pub fn log_user(&mut self, msg: &str) -> Result<()> {

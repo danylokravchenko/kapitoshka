@@ -18,6 +18,10 @@ struct Cli {
     /// Model to use
     #[arg(short, long, default_value = "Qwen3-0.6B")]
     model: String,
+
+    /// Show the model's internal reasoning/thinking if the model supports it
+    #[arg(long)]
+    thinking: bool,
 }
 
 #[tokio::main]
@@ -26,7 +30,7 @@ async fn main() -> Result<()> {
 
     let _trace_guard = trace::init();
 
-    tracing::info!(dir = %cli.dir, model = %cli.model, "starting agent");
+    tracing::info!(dir = %cli.dir, model = %cli.model, thinking = cli.thinking, "starting agent");
 
-    agent::run_interactive(&cli.dir, &cli.model).await
+    agent::run_interactive(&cli.dir, &cli.model, cli.thinking).await
 }
