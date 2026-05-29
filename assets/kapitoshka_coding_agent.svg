@@ -1,0 +1,98 @@
+<svg width="100%" viewBox="0 0 680 520" role="img" xmlns="http://www.w3.org/2000/svg" style="">
+  <title style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">Kapitoshka — Coding Agent</title>
+  <desc style="fill:rgb(0, 0, 0);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto">A cute water droplet character (Kapitoshka) dressed as a coding agent, holding a laptop, with code symbols around it.</desc>
+  <defs>
+    
+  </defs>
+
+  <!-- Floating code snippets background -->
+  <text x="40" y="100" opacity="0.4" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">fn main()</text>
+  <text x="560" y="130" opacity="0.35" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">git push</text>
+  <text x="55" y="390" opacity="0.3" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">cargo run</text>
+  <text x="565" y="370" opacity="0.35" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">npm i</text>
+  <text x="80" y="460" opacity="0.25" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">println!</text>
+  <text x="550" y="450" opacity="0.28" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">debug()</text>
+  <text x="140" y="80" opacity="0.3" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">use std::</text>
+  <text x="460" y="88" opacity="0.3" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.85;font-family:monospace;font-size:13px;font-weight:400;text-anchor:start;dominant-baseline:auto">async fn</text>
+
+  <!-- ===== BODY — droplet shape ===== -->
+  <!-- Main droplet: rounded bottom + pointy top -->
+  <path d="M340 110 C340 110 260 200 245 290 C230 370 270 430 340 435 C410 430 450 370 435 290 C420 200 340 110 340 110 Z" fill="#38bdf8" stroke="#0ea5e9" stroke-width="2.5" style="fill:rgb(56, 189, 248);stroke:rgb(14, 165, 233);color:rgb(255, 255, 255);stroke-width:2.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- Belly highlight -->
+  <ellipse cx="315" cy="320" rx="28" ry="40" fill="white" opacity="0.18" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.18;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- ===== LAPTOP ===== -->
+  <!-- Screen -->
+  <rect x="272" y="355" width="136" height="82" rx="6" fill="#1e293b" stroke="#334155" stroke-width="1.5" style="fill:rgb(30, 41, 59);stroke:rgb(51, 65, 85);color:rgb(255, 255, 255);stroke-width:1.5px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Screen bezel inner -->
+  <rect x="280" y="362" width="120" height="68" rx="3" fill="#0f172a" style="fill:rgb(15, 23, 42);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Code lines on screen -->
+  <rect x="288" y="370" width="55" height="5" rx="2" fill="#6ee7b7" opacity="0.9" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.9;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="288" y="380" width="78" height="5" rx="2" fill="#818cf8" opacity="0.8" style="fill:rgb(129, 140, 248);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.8;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="288" y="390" width="42" height="5" rx="2" fill="#6ee7b7" opacity="0.7" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.7;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="288" y="400" width="68" height="5" rx="2" fill="#f472b6" opacity="0.7" style="fill:rgb(244, 114, 182);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.7;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <rect x="288" y="410" width="50" height="5" rx="2" fill="#818cf8" opacity="0.6" style="fill:rgb(129, 140, 248);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.6;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Cursor blink -->
+  <rect x="344" y="410" width="3" height="8" rx="1" fill="#6ee7b7" opacity="0.95" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.95;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Base of laptop -->
+  <rect x="264" y="435" width="152" height="10" rx="4" fill="#334155" stroke="#475569" stroke-width="1" style="fill:rgb(51, 65, 85);stroke:rgb(71, 85, 105);color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Hinge line -->
+  <line x1="264" y1="435" x2="416" y2="435" stroke="#475569" stroke-width="1" style="fill:rgb(0, 0, 0);stroke:rgb(71, 85, 105);color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- ===== ARMS holding laptop ===== -->
+  <!-- Left arm -->
+  <path d="M268 380 C255 370 258 350 270 355" fill="none" stroke="#0ea5e9" stroke-width="14" stroke-linecap="round" style="fill:none;stroke:rgb(14, 165, 233);color:rgb(255, 255, 255);stroke-width:14px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Right arm -->
+  <path d="M412 380 C425 370 422 350 410 355" fill="none" stroke="#0ea5e9" stroke-width="14" stroke-linecap="round" style="fill:none;stroke:rgb(14, 165, 233);color:rgb(255, 255, 255);stroke-width:14px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- ===== FACE ===== -->
+  <!-- Eyes -->
+  <circle cx="318" cy="270" r="13" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="362" cy="270" r="13" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Pupils (looking slightly down at screen) -->
+  <circle cx="320" cy="273" r="7" fill="#1e293b" style="fill:rgb(30, 41, 59);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="364" cy="273" r="7" fill="#1e293b" style="fill:rgb(30, 41, 59);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Eye shine -->
+  <circle cx="323" cy="270" r="2.5" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="367" cy="270" r="2.5" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- Smile -->
+  <path d="M318 305 Q340 322 362 305" fill="none" stroke="#1e293b" stroke-width="3" stroke-linecap="round" style="fill:none;stroke:rgb(30, 41, 59);color:rgb(255, 255, 255);stroke-width:3px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- Rosy cheeks -->
+  <ellipse cx="300" cy="300" rx="16" ry="10" fill="#f87171" opacity="0.28" style="fill:rgb(248, 113, 113);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.28;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <ellipse cx="380" cy="300" rx="16" ry="10" fill="#f87171" opacity="0.28" style="fill:rgb(248, 113, 113);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:0.28;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- ===== HEADSET / DEV GEAR ===== -->
+  <!-- Headband arc -->
+  <path d="M298 235 Q340 195 382 235" fill="none" stroke="#1e293b" stroke-width="7" stroke-linecap="round" style="fill:none;stroke:rgb(30, 41, 59);color:rgb(255, 255, 255);stroke-width:7px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Left ear cup -->
+  <rect x="284" y="232" width="22" height="28" rx="8" fill="#1e293b" style="fill:rgb(30, 41, 59);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Right ear cup -->
+  <rect x="374" y="232" width="22" height="28" rx="8" fill="#1e293b" style="fill:rgb(30, 41, 59);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <!-- Mic boom -->
+  <path d="M306 255 C290 265 280 278 278 292" fill="none" stroke="#1e293b" stroke-width="3.5" stroke-linecap="round" style="fill:none;stroke:rgb(30, 41, 59);color:rgb(255, 255, 255);stroke-width:3.5px;stroke-linecap:round;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <circle cx="277" cy="295" r="5" fill="#6ee7b7" style="fill:rgb(110, 231, 183);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+
+  <!-- ===== FLOATING BADGES ===== -->
+  <!-- Git badge -->
+  <rect x="108" y="220" width="72" height="28" rx="14" fill="#f97316" style="fill:rgb(249, 115, 22);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="144" y="239" text-anchor="middle" font-family="monospace" font-size="12" font-weight="700" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:monospace;font-size:12px;font-weight:700;text-anchor:middle;dominant-baseline:auto">git ✓</text>
+
+  <!-- Bug squash badge -->
+  <rect x="500" y="220" width="84" height="28" rx="14" fill="#818cf8" style="fill:rgb(129, 140, 248);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="542" y="239" text-anchor="middle" font-family="monospace" font-size="12" font-weight="700" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:monospace;font-size:12px;font-weight:700;text-anchor:middle;dominant-baseline:auto">debug 🐛</text>
+
+  <!-- CI badge -->
+  <rect x="118" y="310" width="72" height="26" rx="13" fill="#10b981" style="fill:rgb(16, 185, 129);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="154" y="328" text-anchor="middle" font-family="monospace" font-size="11" font-weight="700" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:monospace;font-size:11px;font-weight:700;text-anchor:middle;dominant-baseline:auto">CI pass</text>
+
+  <!-- PR badge -->
+  <rect x="490" y="310" width="72" height="26" rx="13" fill="#e879f9" style="fill:rgb(232, 121, 249);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:&quot;Anthropic Sans&quot;, -apple-system, &quot;system-ui&quot;, &quot;Segoe UI&quot;, sans-serif;font-size:16px;font-weight:400;text-anchor:start;dominant-baseline:auto"/>
+  <text x="526" y="328" text-anchor="middle" font-family="monospace" font-size="11" font-weight="700" fill="white" style="fill:rgb(255, 255, 255);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:monospace;font-size:11px;font-weight:700;text-anchor:middle;dominant-baseline:auto">PR open</text>
+
+  <!-- ===== LABEL ===== -->
+  <text x="340" y="478" text-anchor="middle" font-size="22" style="fill:rgb(241, 245, 249);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:sans-serif;font-size:15px;font-weight:500;text-anchor:middle;dominant-baseline:auto">Kapitoshka</text>
+  <text x="340" y="498" text-anchor="middle" style="fill:rgb(148, 163, 184);stroke:none;color:rgb(255, 255, 255);stroke-width:1px;stroke-linecap:butt;stroke-linejoin:miter;opacity:1;font-family:sans-serif;font-size:12px;font-weight:400;text-anchor:middle;dominant-baseline:auto">coding agent · always shipping</text>
+</svg>
