@@ -22,6 +22,10 @@ struct Cli {
     /// Show the model's internal reasoning/thinking if the model supports it
     #[arg(long)]
     thinking: bool,
+
+    /// Context window size in tokens used to display fill percentage (e.g. 131072)
+    #[arg(long, default_value = "0")]
+    context_size: u64,
 }
 
 #[tokio::main]
@@ -32,5 +36,5 @@ async fn main() -> Result<()> {
 
     tracing::info!(dir = %cli.dir, model = %cli.model, thinking = cli.thinking, "starting agent");
 
-    agent::run_interactive(&cli.dir, &cli.model, cli.thinking).await
+    agent::run_interactive(&cli.dir, &cli.model, cli.thinking, cli.context_size).await
 }

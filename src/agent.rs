@@ -2,7 +2,7 @@ use anyhow::Result;
 use futures::StreamExt;
 use rig::agent::{FinalResponse, MultiTurnStreamItem};
 use rig::client::{CompletionClient, ProviderClient};
-use rig::completion::Message;
+use rig::completion::{Message, Usage};
 use rig::providers::openai::CompletionsClient;
 use rig::streaming::{StreamedAssistantContent, StreamingChat};
 use rustyline::DefaultEditor;
@@ -13,6 +13,47 @@ use crate::session::Session;
 use crate::tools::all_tools;
 use crate::ui;
 
+/// Compaction threshold: when accumulated input tokens exceed this value we
+/// drop the oldest half of the history to free context space.
+const COMPACTION_THRESHOLD: u64 = 80_000;
+
+/// Tracks cumulative token usage across all turns in a session.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ContextStats {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub total_tokens: u64,
+    pub cached_input_tokens: u64,
+    pub reasoning_tokens: u64,
+}
+
+impl ContextStats {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add(&mut self, usage: &Usage) {
+        self.input_tokens += usage.input_tokens;
+        self.output_tokens += usage.output_tokens;
+        self.total_tokens += usage.total_tokens;
+        self.cached_input_tokens += usage.cached_input_tokens;
+        self.reasoning_tokens += usage.reasoning_tokens;
+    }
+}
+
+/// Compact `history` by dropping the oldest half of messages when the last
+/// turn's `input_tokens` exceeds `COMPACTION_THRESHOLD`. Returns `true` if
+/// compaction occurred.
+pub fn maybe_compact(history: &mut Vec<Message>, last_input_tokens: u64) -> bool {
+    if last_input_tokens < COMPACTION_THRESHOLD || history.is_empty() {
+        return false;
+    }
+    let keep = history.len() / 2;
+    let drop_n = history.len() - keep;
+    history.drain(..drop_n);
+    true
+}
+
 const SYSTEM_PROMPT: &str = "\
 You are kapitoshka, an expert coding agent. You help users with software engineering tasks.
 
@@ -22,7 +63,7 @@ After making changes, verify them by reading the modified files or running relev
 
 Working directory is provided in the task. Use it as the root for all file operations.";
 
-pub async fn run_interactive(dir: &str, model: &str, thinking: bool) -> Result<()> {
+pub async fn run_interactive(dir: &str, model: &str, thinking: bool, context_size: u64) -> Result<()> {
     let client = CompletionsClient::from_env()?;
     let perm = permission::interactive();
 
@@ -49,6 +90,7 @@ pub async fn run_interactive(dir: &str, model: &str, thinking: bool) -> Result<(
     // Conversation history managed manually so we can append new messages
     // from each turn's FinalResponse.
     let mut history: Vec<Message> = Vec::new();
+    let mut ctx = ContextStats::new();
     let mut rl = DefaultEditor::new()?;
 
     loop {
@@ -69,10 +111,21 @@ pub async fn run_interactive(dir: &str, model: &str, thinking: bool) -> Result<(
 
                 let mut stream = agent.stream_chat(line.as_str(), &history).await;
 
-                let response_text = drive_stream(&mut stream, thinking, &mut history).await;
-
-                match response_text {
-                    Ok(text) => session.log_agent(&text)?,
+                match drive_stream(&mut stream, thinking, &mut history, &mut ctx).await {
+                    Ok((text, last_usage)) => {
+                        session.log_agent(&text)?;
+                        let compacted = maybe_compact(&mut history, last_usage.input_tokens);
+                        ui::print_context_stats(
+                            ctx.input_tokens,
+                            ctx.output_tokens,
+                            ctx.total_tokens,
+                            ctx.cached_input_tokens,
+                            ctx.reasoning_tokens,
+                            last_usage.input_tokens,
+                            context_size,
+                            compacted,
+                        );
+                    }
                     Err(e) => ui::print_error(&e.to_string()),
                 }
             }
@@ -170,11 +223,15 @@ fn scan_normal(text: &str) -> (&str, &str, &str) {
             (&text[..first], &text[first + tag.len()..], tag)
         }
         (Some(t), None) => (&text[..t], &text[t + THINK_OPEN.len()..], THINK_OPEN),
-        (None, Some(tc)) => (&text[..tc], &text[tc + TOOL_CALL_TAG.len()..], TOOL_CALL_TAG),
+        (None, Some(tc)) => (
+            &text[..tc],
+            &text[tc + TOOL_CALL_TAG.len()..],
+            TOOL_CALL_TAG,
+        ),
         (None, None) => {
             // No complete tag; hold back any potential partial tag at the end.
-            let hold = suffix_prefix_len(text, THINK_OPEN)
-                .max(suffix_prefix_len(text, TOOL_CALL_TAG));
+            let hold =
+                suffix_prefix_len(text, THINK_OPEN).max(suffix_prefix_len(text, TOOL_CALL_TAG));
             (&text[..text.len() - hold], &text[text.len() - hold..], "")
         }
     }
@@ -193,19 +250,23 @@ enum StreamState {
 }
 
 /// Consume the streaming response, printing text/thinking chunks to the
-/// terminal as they arrive. Updates `history` from the `FinalResponse`.
-/// Returns the full response text for session logging.
+/// terminal as they arrive. Updates `history` and `ctx` from the `FinalResponse`.
+/// Returns `(response_text, last_turn_usage)` for session logging and compaction.
 async fn drive_stream(
     stream: &mut rig::agent::StreamingResult<
         <rig::providers::openai::GenericCompletionModel as rig::completion::CompletionModel>::StreamingResponse,
     >,
     thinking: bool,
     history: &mut Vec<Message>,
-) -> Result<String> {
-    let mut state = StreamState::Streaming { tail: String::new() };
+    ctx: &mut ContextStats,
+) -> Result<(String, Usage)> {
+    let mut state = StreamState::Streaming {
+        tail: String::new(),
+    };
     let mut response_text = String::new();
     let mut response_started = false;
     let mut thinker = ThinkingPrinter::new();
+    let mut last_usage = Usage::new();
 
     while let Some(item) = stream.next().await {
         match item {
@@ -232,7 +293,9 @@ async fn drive_stream(
                                     }
                                     match tag {
                                         THINK_OPEN => {
-                                            state = StreamState::InThink { tail: String::new() };
+                                            state = StreamState::InThink {
+                                                tail: String::new(),
+                                            };
                                             remaining = rest.to_string();
                                         }
                                         TOOL_CALL_TAG => {
@@ -257,7 +320,9 @@ async fn drive_stream(
                                         }
                                         thinker.finish();
                                         let after = combined[pos + THINK_CLOSE.len()..].to_string();
-                                        state = StreamState::Streaming { tail: String::new() };
+                                        state = StreamState::Streaming {
+                                            tail: String::new(),
+                                        };
                                         remaining = after; // process remainder as normal
                                     } else {
                                         // Hold back potential partial </think> at end.
@@ -290,7 +355,9 @@ async fn drive_stream(
             Ok(MultiTurnStreamItem::StreamUserItem(_)) => {
                 // Tool result consumed — model will now produce more text (or
                 // call another tool). Reset streaming with a fresh look-ahead.
-                state = StreamState::Streaming { tail: String::new() };
+                state = StreamState::Streaming {
+                    tail: String::new(),
+                };
             }
             Ok(MultiTurnStreamItem::FinalResponse(fin)) => {
                 // Flush any pending look-ahead tails.
@@ -306,7 +373,8 @@ async fn drive_stream(
                     }
                     _ => {}
                 }
-                handle_final(&fin, &mut response_text, history);
+                last_usage = handle_final(&fin, &mut response_text, history);
+                ctx.add(&last_usage);
                 break;
             }
             Ok(_) => {}
@@ -324,7 +392,7 @@ async fn drive_stream(
     if response_started {
         ui::stream_response_end();
     }
-    Ok(response_text)
+    Ok((response_text, last_usage))
 }
 
 /// Write `chunk` to the terminal and append it to `response_text`.
@@ -337,15 +405,185 @@ fn emit_text(chunk: &str, response_started: &mut bool, response_text: &mut Strin
     response_text.push_str(chunk);
 }
 
-
-fn handle_final(fin: &FinalResponse, response_text: &mut String, history: &mut Vec<Message>) {
-    // FinalResponse::response() holds the concatenated text for the turn.
-    // Use it only as a fallback if we haven't accumulated text via streaming.
+fn handle_final(
+    fin: &FinalResponse,
+    response_text: &mut String,
+    history: &mut Vec<Message>,
+) -> Usage {
     if response_text.is_empty() && !fin.response().is_empty() {
         response_text.push_str(fin.response());
         ui::print_response(fin.response());
     }
     if let Some(new_msgs) = fin.history() {
         history.extend_from_slice(new_msgs);
+    }
+    fin.usage()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig::completion::Message;
+
+    // ── suffix_prefix_len ────────────────────────────────────────────────────
+
+    #[test]
+    fn suffix_prefix_no_overlap() {
+        assert_eq!(suffix_prefix_len("hello world", "<think>"), 0);
+    }
+
+    #[test]
+    fn suffix_prefix_partial_think() {
+        assert_eq!(suffix_prefix_len("foo <thi", "<think>"), 4);
+    }
+
+    #[test]
+    fn suffix_prefix_full_needle_length() {
+        // When text ends with the complete needle, the full needle length is returned.
+        // scan_normal's find() catches complete tags first, so this only guards edge cases.
+        assert_eq!(suffix_prefix_len("foo <think>", "<think>"), THINK_OPEN.len());
+    }
+
+    #[test]
+    fn suffix_prefix_single_char_overlap() {
+        assert_eq!(suffix_prefix_len("text <", "<think>"), 1);
+    }
+
+    #[test]
+    fn suffix_prefix_tool_call_partial() {
+        assert_eq!(suffix_prefix_len("end <tool", TOOL_CALL_TAG), 5);
+    }
+
+    // ── scan_normal ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn scan_normal_no_tags() {
+        let (safe, tail, tag) = scan_normal("hello world");
+        assert_eq!(safe, "hello world");
+        assert_eq!(tag, "");
+        assert_eq!(tail, "");
+    }
+
+    #[test]
+    fn scan_normal_holds_partial_think() {
+        let (safe, tail, tag) = scan_normal("hello <thi");
+        assert_eq!(safe, "hello ");
+        assert_eq!(tag, "");
+        assert_eq!(tail, "<thi");
+    }
+
+    #[test]
+    fn scan_normal_complete_think_tag() {
+        let (safe, rest, tag) = scan_normal("before <think> after");
+        assert_eq!(safe, "before ");
+        assert_eq!(tag, THINK_OPEN);
+        assert_eq!(rest, " after");
+    }
+
+    #[test]
+    fn scan_normal_complete_tool_call_tag() {
+        let (safe, rest, tag) = scan_normal("before <tool_call> after");
+        assert_eq!(safe, "before ");
+        assert_eq!(tag, TOOL_CALL_TAG);
+        assert_eq!(rest, " after");
+    }
+
+    #[test]
+    fn scan_normal_think_before_tool() {
+        let (safe, rest, tag) = scan_normal("a <think>b<tool_call>c");
+        assert_eq!(safe, "a ");
+        assert_eq!(tag, THINK_OPEN);
+        assert_eq!(rest, "b<tool_call>c");
+    }
+
+    #[test]
+    fn scan_normal_tool_before_think() {
+        let (safe, rest, tag) = scan_normal("a <tool_call>b<think>c");
+        assert_eq!(safe, "a ");
+        assert_eq!(tag, TOOL_CALL_TAG);
+        assert_eq!(rest, "b<think>c");
+    }
+
+    // ── ContextStats ─────────────────────────────────────────────────────────
+
+    fn make_usage(input: u64, output: u64, total: u64) -> Usage {
+        Usage {
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: total,
+            cached_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            reasoning_tokens: 0,
+        }
+    }
+
+    #[test]
+    fn context_stats_accumulates() {
+        let mut ctx = ContextStats::new();
+        ctx.add(&make_usage(100, 50, 150));
+        ctx.add(&make_usage(200, 80, 280));
+        assert_eq!(ctx.input_tokens, 300);
+        assert_eq!(ctx.output_tokens, 130);
+        assert_eq!(ctx.total_tokens, 430);
+    }
+
+    #[test]
+    fn context_stats_starts_zero() {
+        let ctx = ContextStats::new();
+        assert_eq!(ctx.input_tokens, 0);
+        assert_eq!(ctx.output_tokens, 0);
+        assert_eq!(ctx.total_tokens, 0);
+    }
+
+    // ── maybe_compact ────────────────────────────────────────────────────────
+
+    fn make_messages(n: usize) -> Vec<Message> {
+        (0..n).map(|i| Message::user(format!("msg {i}"))).collect()
+    }
+
+    #[test]
+    fn compact_below_threshold_noop() {
+        let mut history = make_messages(10);
+        let compacted = maybe_compact(&mut history, COMPACTION_THRESHOLD - 1);
+        assert!(!compacted);
+        assert_eq!(history.len(), 10);
+    }
+
+    #[test]
+    fn compact_at_threshold_drops_oldest_half() {
+        let mut history = make_messages(10);
+        let compacted = maybe_compact(&mut history, COMPACTION_THRESHOLD);
+        assert!(compacted);
+        assert_eq!(history.len(), 5);
+        // The 5 kept messages are the newest half (original indices 5-9).
+        // Verify the first kept message is "msg 5" by checking its text content.
+        match history[0].clone() {
+            Message::User { content } => {
+                let first = content.first();
+                match first {
+                    rig::completion::message::UserContent::Text(t) => {
+                        assert!(t.text.contains('5'), "expected msg 5, got: {}", t.text);
+                    }
+                    _ => panic!("expected text content"),
+                }
+            }
+            _ => panic!("expected User message"),
+        }
+    }
+
+    #[test]
+    fn compact_empty_history_noop() {
+        let mut history: Vec<Message> = Vec::new();
+        let compacted = maybe_compact(&mut history, COMPACTION_THRESHOLD + 1);
+        assert!(!compacted);
+        assert!(history.is_empty());
+    }
+
+    #[test]
+    fn compact_odd_length_keeps_ceil_half() {
+        let mut history = make_messages(7);
+        maybe_compact(&mut history, COMPACTION_THRESHOLD);
+        // 7 / 2 = 3 kept (integer division), dropping 4
+        assert_eq!(history.len(), 3);
     }
 }

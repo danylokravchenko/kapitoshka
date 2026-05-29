@@ -1,6 +1,5 @@
 use crossterm::{
-    cursor,
-    execute, queue,
+    cursor, execute, queue,
     style::{Color, Print, ResetColor, SetForegroundColor},
 };
 use std::io::{self, Write as IoWrite};
@@ -97,8 +96,16 @@ fn color_for_char(ch: char, frame_idx: usize) -> Option<Color> {
     match ch {
         '·' => Some(Color::DarkGrey),
         '∘' => Some(Color::Blue),
-        '○' => Some(if frame_idx % 2 == 0 { Color::Cyan } else { Color::Blue }),
-        '/' | '\\' | '|' | '_' => Some(Color::Rgb { r: 64, g: 180, b: 255 }),
+        '○' => Some(if frame_idx.is_multiple_of(2) {
+            Color::Cyan
+        } else {
+            Color::Blue
+        }),
+        '/' | '\\' | '|' | '_' => Some(Color::Rgb {
+            r: 64,
+            g: 180,
+            b: 255,
+        }),
         'V' => Some(Color::Blue),
         '.' => Some(Color::White),
         '◕' => Some(Color::Cyan),
@@ -267,6 +274,40 @@ pub fn print_response(text: &str) {
         ResetColor,
         Print("\n"),
     );
+}
+
+pub fn print_context_stats(
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    cached: u64,
+    reasoning: u64,
+    last_input_tokens: u64,
+    context_size: u64,
+    compacted: bool,
+) {
+    let mut out = stdout();
+    let compacted_label = if compacted { "  ✂ history compacted\n" } else { "" };
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::DarkGrey),
+        Print(compacted_label),
+        Print(format!(
+            "  ctx  in:{input_tokens}  out:{output_tokens}  total:{total_tokens}"
+        )),
+    );
+    if cached > 0 {
+        let _ = execute!(out, Print(format!("  cached:{cached}")));
+    }
+    if reasoning > 0 {
+        let _ = execute!(out, Print(format!("  think:{reasoning}")));
+    }
+    if context_size > 0 && last_input_tokens > 0 {
+        let pct = last_input_tokens * 100 / context_size;
+        let size_k = context_size / 1000;
+        let _ = execute!(out, Print(format!("  {pct}% of {size_k}k")));
+    }
+    let _ = execute!(out, ResetColor, Print("\n"));
 }
 
 pub fn print_error(msg: &str) {
