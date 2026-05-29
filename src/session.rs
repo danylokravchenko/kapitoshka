@@ -1,12 +1,19 @@
 use anyhow::Result;
 use chrono::Local;
+use rig::completion::Message;
 use std::fs::{self, File};
 use std::io::Write as IoWrite;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub struct Session {
     pub path: PathBuf,
     file: File,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SessionState {
+    history: Vec<Message>,
+    scratchpad: String,
 }
 
 impl Session {
@@ -34,5 +41,28 @@ impl Session {
     pub fn log_agent(&mut self, msg: &str) -> Result<()> {
         writeln!(self.file, "## Assistant\n\n{msg}\n\n---\n")?;
         Ok(())
+    }
+
+    /// Write conversation state to a sidecar JSON file next to the session log.
+    /// Called after every successful turn so a crash loses at most one turn.
+    pub fn save_state(&self, history: &[Message], scratchpad: &str) -> Result<()> {
+        let state = SessionState {
+            history: history.to_vec(),
+            scratchpad: scratchpad.to_owned(),
+        };
+        let json = serde_json::to_string(&state)?;
+        fs::write(self.state_path(), json)?;
+        Ok(())
+    }
+
+    /// Load history and scratchpad from a previously saved state file.
+    pub fn load_state(path: &Path) -> Result<(Vec<Message>, String)> {
+        let json = fs::read_to_string(path)?;
+        let state: SessionState = serde_json::from_str(&json)?;
+        Ok((state.history, state.scratchpad))
+    }
+
+    fn state_path(&self) -> PathBuf {
+        self.path.with_extension("json")
     }
 }

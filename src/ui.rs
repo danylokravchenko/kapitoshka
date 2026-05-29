@@ -334,3 +334,16 @@ pub fn print_error(msg: &str) {
         ResetColor,
     );
 }
+
+/// Called when the user cancels a turn mid-stream with Ctrl+C.
+pub fn print_cancelled() {
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        ResetColor,
+        Print("\n"),
+        SetForegroundColor(Color::DarkGrey),
+        Print("  ⊘  cancelled\n"),
+        ResetColor,
+    );
+}

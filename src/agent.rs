@@ -7,6 +7,7 @@ use rig::providers::{anthropic, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingChat};
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use std::time::Duration;
 use tracing::Instrument as _;
 
 use crate::context;
@@ -39,6 +40,9 @@ impl ContextStats {
     }
 }
 
+/// Maximum wall-clock time allowed for a single agent turn.
+const TURN_TIMEOUT: Duration = Duration::from_secs(300);
+
 const SYSTEM_PROMPT: &str = "\
 You are kapitoshka, an expert coding agent. You help users with software engineering tasks.
 
@@ -55,9 +59,20 @@ pub async fn run_interactive(
     thinking: bool,
     context_size: u64,
     session_id: &str,
+    resume: Option<&std::path::Path>,
 ) -> Result<()> {
     let session = Session::new(dir, model)?;
     let session_span = tracing::info_span!("session", id = %session_id, dir = %dir, model = %model);
+
+    // Load prior history + scratchpad when resuming a crashed or previous session.
+    let (initial_history, initial_scratchpad) = match resume {
+        Some(path) => {
+            let (h, s) = Session::load_state(path)?;
+            tracing::info!(path = %path.display(), turns = h.len(), "resumed session state");
+            (h, s)
+        }
+        None => (Vec::new(), String::new()),
+    };
 
     match provider {
         "anthropic" => {
@@ -70,9 +85,19 @@ pub async fn run_interactive(
                 .max_tokens(8192)
                 .default_max_turns(20)
                 .build();
-            run_loop(agent, client, dir, model, thinking, context_size, session)
-                .instrument(session_span)
-                .await
+            run_loop(
+                agent,
+                client,
+                dir,
+                model,
+                thinking,
+                context_size,
+                session,
+                initial_history,
+                initial_scratchpad,
+            )
+            .instrument(session_span)
+            .await
         }
         _ => {
             let client = openai::CompletionsClient::from_env()?;
@@ -89,13 +114,24 @@ pub async fn run_interactive(
                 builder = builder.additional_params(serde_json::json!({ "enable_thinking": true }));
             }
             let agent = builder.build();
-            run_loop(agent, client, dir, model, thinking, context_size, session)
-                .instrument(session_span)
-                .await
+            run_loop(
+                agent,
+                client,
+                dir,
+                model,
+                thinking,
+                context_size,
+                session,
+                initial_history,
+                initial_scratchpad,
+            )
+            .instrument(session_span)
+            .await
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_loop<M, C>(
     agent: Agent<M>,
     client: C,
@@ -104,6 +140,8 @@ async fn run_loop<M, C>(
     thinking: bool,
     context_size: u64,
     mut session: Session,
+    initial_history: Vec<Message>,
+    initial_scratchpad: String,
 ) -> Result<()>
 where
     M: CompletionModel + 'static,
@@ -116,10 +154,10 @@ where
 
     // Conversation history managed manually so we can append new messages
     // from each turn's FinalResponse.
-    let mut history: Vec<Message> = Vec::new();
+    let mut history = initial_history;
     // Scratchpad accumulates summaries from compaction and is prepended to
     // every request so the model retains context across compaction boundaries.
-    let mut scratchpad = String::new();
+    let mut scratchpad = initial_scratchpad;
     let mut ctx = ContextStats::new();
     let mut rl = DefaultEditor::new()?;
 
@@ -151,56 +189,78 @@ where
                 let effective_history = build_effective_history(&history, &scratchpad);
                 let mut stream = agent.stream_chat(line.as_str(), &effective_history).await;
 
-                match drive_stream(&mut stream, thinking, &mut history, &mut ctx)
-                    .instrument(turn_span)
-                    .await
-                {
-                    Ok((text, last_usage)) => {
-                        session.log_agent(&text)?;
-
-                        // 1. Compress old tool results (cheap, no model call).
-                        context::compress_tool_results(&mut history);
-
-                        // 2. Summarise + compact if context is filling up.
-                        let compacted =
-                            if context::needs_compaction(last_usage.input_tokens, context_size) {
-                                tracing::info!(
-                                    input_tokens = last_usage.input_tokens,
-                                    context_size,
-                                    history_len = history.len(),
-                                    "compacting context"
-                                );
-                                ui::print_compacting();
-                                let did_compact = context::compact_with_summary(
-                                    &mut history,
-                                    &mut scratchpad,
-                                    &client,
-                                    model,
-                                )
-                                .await
-                                .unwrap_or(false);
-                                if did_compact {
-                                    tracing::info!(history_len = history.len(), "compaction done");
-                                }
-                                did_compact
-                            } else {
-                                false
-                            };
-
-                        ui::print_context_stats(
-                            ctx.input_tokens,
-                            ctx.output_tokens,
-                            ctx.total_tokens,
-                            ctx.cached_input_tokens,
-                            ctx.reasoning_tokens,
-                            last_usage.input_tokens,
-                            context_size,
-                            compacted,
-                        );
+                let turn_result = tokio::select! {
+                    biased;
+                    result = drive_stream(&mut stream, thinking, &mut history, &mut ctx)
+                        .instrument(turn_span) => Some(result),
+                    _ = tokio::time::sleep(TURN_TIMEOUT) => {
+                        ui::print_error("turn timed out after 5 minutes");
+                        None
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, "turn failed");
-                        ui::print_error(&e.to_string());
+                    _ = tokio::signal::ctrl_c() => {
+                        ui::print_cancelled();
+                        None
+                    }
+                };
+
+                if let Some(turn_result) = turn_result {
+                    match turn_result {
+                        Ok((text, last_usage)) => {
+                            session.log_agent(&text)?;
+
+                            // 1. Compress old tool results (cheap, no model call).
+                            context::compress_tool_results(&mut history);
+
+                            // 2. Summarise + compact if context is filling up.
+                            let compacted =
+                                if context::needs_compaction(last_usage.input_tokens, context_size)
+                                {
+                                    tracing::info!(
+                                        input_tokens = last_usage.input_tokens,
+                                        context_size,
+                                        history_len = history.len(),
+                                        "compacting context"
+                                    );
+                                    ui::print_compacting();
+                                    let did_compact = context::compact_with_summary(
+                                        &mut history,
+                                        &mut scratchpad,
+                                        &client,
+                                        model,
+                                    )
+                                    .await
+                                    .unwrap_or(false);
+                                    if did_compact {
+                                        tracing::info!(
+                                            history_len = history.len(),
+                                            "compaction done"
+                                        );
+                                    }
+                                    did_compact
+                                } else {
+                                    false
+                                };
+
+                            // 3. Persist conversation state so a crash loses at most one turn.
+                            if let Err(e) = session.save_state(&history, &scratchpad) {
+                                tracing::warn!(error = %e, "failed to save session state");
+                            }
+
+                            ui::print_context_stats(
+                                ctx.input_tokens,
+                                ctx.output_tokens,
+                                ctx.total_tokens,
+                                ctx.cached_input_tokens,
+                                ctx.reasoning_tokens,
+                                last_usage.input_tokens,
+                                context_size,
+                                compacted,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "turn failed");
+                            ui::print_error(&e.to_string());
+                        }
                     }
                 }
             }

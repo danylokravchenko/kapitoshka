@@ -31,6 +31,10 @@ struct Cli {
     /// Context window size in tokens used to display fill percentage (e.g. 131072)
     #[arg(long, default_value = "0")]
     context_size: u64,
+
+    /// Resume a previous session from a saved state file (.json sidecar next to the session log)
+    #[arg(long)]
+    resume: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
@@ -63,6 +67,7 @@ async fn main() -> Result<()> {
         cli.thinking,
         cli.context_size,
         &session_id,
+        cli.resume.as_deref(),
     )
     .await
 }

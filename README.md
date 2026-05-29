@@ -30,6 +30,7 @@ cargo run -- --dir /path/to/project --model my-model
 | `--model` | `-m` | `Qwen3-0.6B` | Model name to use |
 | `--thinking` | | off | Display the model's internal reasoning (requires model support) |
 | `--context-size` | | `0` | Context window size in tokens — enables fill-% display and automatic compaction |
+| `--resume` | | — | Path to a `.json` session state file to restore history from a previous session |
 
 ### Context management
 
@@ -56,6 +57,18 @@ When compaction runs you will see:
 ✂  compacting context…
   ctx  in:…  out:…  total:…  ✂ history compacted
 ```
+
+### Session resilience
+
+Kapitoshka saves conversation state (history + compaction scratchpad) to a JSON sidecar file next to the session log after every successful turn. If the process crashes or is killed, at most one turn of context is lost.
+
+To resume a previous session:
+
+```bash
+kapitoshka --resume ~/.kapitoshka/sessions/2024-01-15-143022.json --dir /path/to/project --model my-model
+```
+
+Pressing **Ctrl+C** during a running turn cancels that turn and returns to the prompt without exiting.
 
 ## Tools
 
@@ -84,6 +97,34 @@ All file paths are resolved relative to `--dir`.
 | Shell escapes | `eval`, `exec` |
 
 Safe commands such as `cargo test`, `git status`, `grep`, and `rm -rf target/` pass through unaffected.
+
+## Tracing & Observability
+
+Kapitoshka writes structured logs to `~/.kapitoshka/` after every session:
+
+| File | Format | Use |
+| ---- | ------ | --- |
+| `trace.log.<date>` | Human-readable text (daily rolling) | Local debugging |
+| `trace.json.<date>` | Newline-delimited JSON (daily rolling) | Ingest into Loki, Datadog, `jq`, etc. |
+
+### OpenTelemetry (OTLP)
+
+Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export spans to any OTel-compatible backend (Jaeger, Tempo, Honeycomb, …):
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+export OTEL_SERVICE_NAME=kapitoshka   # optional, defaults to "kapitoshka"
+kapitoshka --dir /path/to/project --model my-model
+```
+
+Spans emitted per session:
+
+| Span | Attributes |
+| ---- | ---------- |
+| `session` | `id`, `dir`, `model` |
+| `turn` | `history_len`, `input_tokens` |
+
+When `OTEL_EXPORTER_OTLP_ENDPOINT` is not set the OTel layer is not initialised and adds zero overhead.
 
 ## License
 
