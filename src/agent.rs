@@ -43,7 +43,7 @@ impl ContextStats {
 /// Maximum wall-clock time allowed for a single agent turn.
 const TURN_TIMEOUT: Duration = Duration::from_secs(300);
 
-const SYSTEM_PROMPT: &str = "\
+const SYSTEM_PROMPT_BASE: &str = "\
 You are kapitoshka, an expert coding agent. You help users with software engineering tasks.
 
 You have access to tools to read files, write files, list directories, and run shell commands.
@@ -51,6 +51,103 @@ Always explore the codebase before making changes. Prefer targeted edits over fu
 After making changes, verify them by reading the modified files or running relevant commands.
 
 Working directory is provided in the task. Use it as the root for all file operations.";
+
+/// Build the system prompt, appending AGENTS.md from `dir` if it exists.
+///
+/// AGENTS.md may contain agent-specific sections introduced by a heading whose
+/// text matches the agent name (case-insensitive), e.g. `## kapitoshka`.
+/// We include: all content before the first agent-specific heading (global
+/// rules), plus the body of the section that matches `agent_name` (if any).
+/// Sections for other agents are omitted.
+fn build_system_prompt(dir: &str) -> String {
+    let agents_md = std::path::Path::new(dir).join("AGENTS.md");
+    let contents = match std::fs::read_to_string(&agents_md) {
+        Ok(c) if !c.trim().is_empty() => c,
+        Ok(_) => return SYSTEM_PROMPT_BASE.to_string(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return SYSTEM_PROMPT_BASE.to_string();
+        }
+        Err(e) => {
+            tracing::warn!(path = %agents_md.display(), error = %e, "failed to read AGENTS.md");
+            return SYSTEM_PROMPT_BASE.to_string();
+        }
+    };
+
+    let rules = extract_agent_rules(&contents, "kapitoshka");
+    if rules.trim().is_empty() {
+        return SYSTEM_PROMPT_BASE.to_string();
+    }
+    tracing::info!(path = %agents_md.display(), "loaded AGENTS.md");
+    format!("{SYSTEM_PROMPT_BASE}\n\n# Project Rules (AGENTS.md)\n\n{rules}")
+}
+
+/// Extract the rules from `contents` that apply to `agent_name`:
+/// - All text before the first agent-specific heading (global rules).
+/// - The body of the heading section whose title matches `agent_name` (case-insensitive).
+///
+/// An "agent-specific heading" is any ATX heading (`#`…`######`) whose text,
+/// when compared case-insensitively and with surrounding whitespace stripped,
+/// matches a known agent name. We identify them by checking every heading
+/// against `agent_name`; headings that do NOT match are treated as agent sections
+/// to skip, and headings that DO match are the section to include.
+fn extract_agent_rules(contents: &str, agent_name: &str) -> String {
+    let agent_name_lower = agent_name.to_lowercase();
+
+    // Split into lines and iterate, tracking which section we are in.
+    enum Section {
+        Global, // before any agent heading
+        Ours,   // inside the matching agent's section
+        Other,  // inside a different agent's section
+    }
+
+    let mut section = Section::Global;
+    let mut global = String::new();
+    let mut ours = String::new();
+
+    for line in contents.lines() {
+        // Check if line is an ATX heading.
+        let trimmed = line.trim_start_matches('#');
+        let hashes = line.len() - trimmed.len();
+        if hashes > 0 && hashes <= 6 && trimmed.starts_with(' ') {
+            let heading_text = trimmed.trim().to_lowercase();
+            if heading_text == agent_name_lower {
+                section = Section::Ours;
+                continue; // drop the heading itself
+            } else {
+                // Any other heading — could be a sub-heading inside our section
+                // or a sibling agent section. We treat top-level headings (#, ##)
+                // as potential agent-section delimiters; deeper ones stay in context.
+                if hashes <= 2 {
+                    section = Section::Other;
+                    continue;
+                }
+                // Deeper heading: stays inside whatever section we're already in.
+            }
+        }
+
+        match section {
+            Section::Global => {
+                global.push_str(line);
+                global.push('\n');
+            }
+            Section::Ours => {
+                ours.push_str(line);
+                ours.push('\n');
+            }
+            Section::Other => {}
+        }
+    }
+
+    let global = global.trim_end().to_string();
+    let ours = ours.trim_end().to_string();
+
+    match (global.is_empty(), ours.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => global,
+        (true, false) => ours,
+        (false, false) => format!("{global}\n\n{ours}"),
+    }
+}
 
 pub async fn run_interactive(
     dir: &str,
@@ -74,13 +171,15 @@ pub async fn run_interactive(
         None => (Vec::new(), String::new()),
     };
 
+    let system_prompt = build_system_prompt(dir);
+
     match provider {
         "anthropic" => {
             let client = anthropic::Client::from_env()?;
             let perm = permission::interactive();
             let agent = client
                 .agent(model)
-                .preamble(SYSTEM_PROMPT)
+                .preamble(&system_prompt)
                 .tools(all_tools(dir, perm))
                 .max_tokens(8192)
                 .default_max_turns(20)
@@ -104,7 +203,7 @@ pub async fn run_interactive(
             let perm = permission::interactive();
             let mut builder = client
                 .agent(model)
-                .preamble(SYSTEM_PROMPT)
+                .preamble(&system_prompt)
                 .tools(all_tools(dir, perm))
                 .max_tokens(8192)
                 .default_max_turns(20);
@@ -732,5 +831,59 @@ mod tests {
         let history = vec![Message::user("a"), Message::user("b")];
         let _ = build_effective_history(&history, "memo");
         assert_eq!(history.len(), 2);
+    }
+
+    // ── extract_agent_rules ──────────────────────────────────────────────────
+
+    #[test]
+    fn agent_rules_global_only() {
+        let md = "Use conventional commits.\nRun tests before pushing.\n";
+        let rules = extract_agent_rules(md, "kapitoshka");
+        assert!(rules.contains("Use conventional commits"));
+        assert!(rules.contains("Run tests"));
+    }
+
+    #[test]
+    fn agent_rules_picks_matching_section() {
+        let md = "\
+Global rule.
+
+## kapitoshka
+Agent-specific rule.
+
+## other-agent
+Should not appear.
+";
+        let rules = extract_agent_rules(md, "kapitoshka");
+        assert!(rules.contains("Global rule"));
+        assert!(rules.contains("Agent-specific rule"));
+        assert!(!rules.contains("Should not appear"));
+    }
+
+    #[test]
+    fn agent_rules_skips_non_matching_section() {
+        let md = "\
+## other-agent
+Other rule.
+";
+        let rules = extract_agent_rules(md, "kapitoshka");
+        assert!(rules.is_empty());
+    }
+
+    #[test]
+    fn agent_rules_case_insensitive_heading() {
+        let md = "\
+## Kapitoshka
+My rule.
+";
+        let rules = extract_agent_rules(md, "kapitoshka");
+        assert!(rules.contains("My rule"));
+    }
+
+    #[test]
+    fn agent_rules_no_agent_sections() {
+        let md = "Just global rules here.";
+        let rules = extract_agent_rules(md, "kapitoshka");
+        assert_eq!(rules, "Just global rules here.");
     }
 }

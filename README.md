@@ -7,6 +7,7 @@ A coding agent built in Rust. It connects to any OpenAI-compatible inference ser
 ## Requirements
 
 - An OpenAI-compatible inference server (OpenAI, Ollama, vLLM, LM Studio, llama.cpp, etc.)
+- Or Anthropic-compatible inference server.
 
 ## Setup
 
@@ -69,6 +70,42 @@ kapitoshka --resume ~/.kapitoshka/sessions/2024-01-15-143022.json --dir /path/to
 ```
 
 Pressing **Ctrl+C** during a running turn cancels that turn and returns to the prompt without exiting.
+
+## Project Rules (AGENTS.md)
+
+Kapitoshka reads an `AGENTS.md` file from the working directory (`--dir`) at startup and injects its contents into the system prompt.
+
+Create `AGENTS.md` in the root of your project to give the agent persistent, project-specific instructions — coding conventions, test commands, off-limits paths, preferred patterns, etc.
+
+### Global rules
+
+Any content before the first agent-specific heading is treated as global rules and always included:
+
+```markdown
+Always run `cargo clippy` before reporting a task complete.
+Never edit files inside `vendor/`.
+Prefer `patch_file` over `write_file` for small edits.
+```
+
+### Agent-specific sections
+
+Use a `#` or `##` heading whose text matches the agent name (`kapitoshka`, case-insensitive) to write rules that apply only to this agent. Rules for other agents are silently ignored.
+
+```markdown
+# Shared rules (applied to every agent)
+
+Run the test suite with `cargo test` after every change.
+
+## kapitoshka
+
+Use conventional commits (feat:, fix:, chore:, …).
+Do not modify `Cargo.lock` directly.
+
+## some-other-agent
+Rules here are ignored by kapitoshka.
+```
+
+Sub-headings (`###` and deeper) inside an agent section are preserved as part of that section's body, so you can structure rules however you like.
 
 ## Tools
 
