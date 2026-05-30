@@ -14,6 +14,7 @@ use crate::context;
 use crate::permission;
 use crate::session::Session;
 use crate::tools::all_tools;
+use crate::trajectory::TrajectoryRecorder;
 use crate::ui;
 
 /// Tracks cumulative token usage across all turns in a session.
@@ -251,6 +252,8 @@ where
     let session_path = session.path.display().to_string();
     ui::print_banner(model, dir, &session_path, thinking);
 
+    let mut recorder = TrajectoryRecorder::new(&session.path)?;
+
     // Conversation history managed manually so we can append new messages
     // from each turn's FinalResponse.
     let mut history = initial_history;
@@ -274,6 +277,7 @@ where
                 let _ = rl.add_history_entry(&line);
 
                 session.log_user(&line)?;
+                recorder.start_turn(&line);
                 ui::print_working();
 
                 let turn_span = tracing::info_span!(
@@ -290,7 +294,7 @@ where
 
                 let turn_result = tokio::select! {
                     biased;
-                    result = drive_stream(&mut stream, thinking, &mut history, &mut ctx)
+                    result = drive_stream(&mut stream, thinking, &mut history, &mut ctx, &mut recorder)
                         .instrument(turn_span) => Some(result),
                     _ = tokio::time::sleep(TURN_TIMEOUT) => {
                         ui::print_error("turn timed out after 5 minutes");
@@ -491,6 +495,7 @@ async fn drive_stream<R>(
     thinking: bool,
     history: &mut Vec<Message>,
     ctx: &mut ContextStats,
+    recorder: &mut TrajectoryRecorder,
 ) -> Result<(String, Usage)> {
     let mut state = StreamState::Streaming {
         tail: String::new(),
@@ -569,24 +574,48 @@ async fn drive_stream<R>(
                             }
                         }
                     }
-                    StreamedAssistantContent::ToolCallDelta { .. }
-                    | StreamedAssistantContent::ToolCall { .. } => {
+                    StreamedAssistantContent::ToolCallDelta { .. } => {
                         // Structured tool-call event — the tail was markup, drop it.
                         state = StreamState::InToolCall;
                     }
-                    StreamedAssistantContent::ReasoningDelta { reasoning, .. } if thinking => {
-                        thinker.feed(&reasoning);
+                    StreamedAssistantContent::ToolCall { tool_call, .. } => {
+                        state = StreamState::InToolCall;
+                        recorder.tool_call(&tool_call.id, &tool_call.function.name, Some(tool_call.function.arguments.clone()));
                     }
-                    StreamedAssistantContent::Reasoning(r) if thinking => {
-                        thinker.feed(&r.display_text());
-                        thinker.finish();
+                    StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
+                        recorder.feed_thinking(&reasoning);
+                        if thinking {
+                            thinker.feed(&reasoning);
+                        }
+                    }
+                    StreamedAssistantContent::Reasoning(r) => {
+                        let text = r.display_text();
+                        recorder.feed_thinking(&text);
+                        recorder.finish_thinking();
+                        if thinking {
+                            thinker.feed(&text);
+                            thinker.finish();
+                        }
                     }
                     _ => {}
                 }
             }
-            Ok(MultiTurnStreamItem::StreamUserItem(_)) => {
-                // Tool result consumed — model will now produce more text (or
-                // call another tool). Reset streaming with a fresh look-ahead.
+            Ok(MultiTurnStreamItem::StreamUserItem(item)) => {
+                // Tool result consumed — record it and reset streaming.
+                let rig::streaming::StreamedUserContent::ToolResult { tool_result, .. } = &item;
+                let output = tool_result
+                    .content
+                    .iter()
+                    .filter_map(|c| {
+                        if let rig::completion::message::ToolResultContent::Text(t) = c {
+                            Some(t.text.as_str())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                recorder.tool_result(&tool_result.id, &output);
                 state = StreamState::Streaming {
                     tail: String::new(),
                 };
@@ -599,14 +628,27 @@ async fn drive_stream<R>(
                     }
                     StreamState::InThink { tail } => {
                         if thinking && !tail.is_empty() {
-                            thinker.feed(tail);
+                            recorder.feed_thinking(tail);
+                            if thinking {
+                                thinker.feed(tail);
+                            }
                         }
+                        recorder.finish_thinking();
                         thinker.finish();
                     }
                     _ => {}
                 }
                 last_usage = handle_final(&fin, &mut response_text, history);
                 ctx.add(&last_usage);
+                if let Err(e) = recorder.finish_turn(
+                    &response_text,
+                    last_usage.input_tokens,
+                    last_usage.output_tokens,
+                    last_usage.cached_input_tokens,
+                    last_usage.reasoning_tokens,
+                ) {
+                    tracing::warn!(error = %e, "failed to write trajectory record");
+                }
                 break;
             }
             Ok(_) => {}

@@ -135,6 +135,63 @@ All file paths are resolved relative to `--dir`.
 
 Safe commands such as `cargo test`, `git status`, `grep`, and `rm -rf target/` pass through unaffected.
 
+## Trajectory Collection
+
+Kapitoshka records every agent turn as a structured JSON trace alongside the session log. This is useful for offline analysis, fine-tuning dataset construction, latency profiling, and failure inspection.
+
+### Output format
+
+Each session produces a `.jsonl` sidecar file (one JSON object per line, one line per turn):
+
+```text
+~/.kapitoshka/sessions/2026-05-30-120000.md      ← human-readable session log
+~/.kapitoshka/sessions/2026-05-30-120000.jsonl   ← trajectory records
+```
+
+Each record captures the complete causal chain for a turn:
+
+```json
+{
+  "turn": 1,
+  "timestamp": "2026-05-30T12:00:01.234Z",
+  "user": "add a test for the parser",
+  "total_duration_ms": 4821,
+  "spans": [
+    { "type": "thinking",   "text": "I need to locate the parser module first…" },
+    { "type": "tool_call",  "id": "c1", "name": "read_file", "input": { "path": "src/parser.rs" } },
+    { "type": "tool_result","call_id": "c1", "output": "pub fn parse(…) {…}", "duration_ms": 12 },
+    { "type": "tool_call",  "id": "c2", "name": "patch_file", "input": { "path": "src/parser.rs", "old": "…", "new": "…" } },
+    { "type": "tool_result","call_id": "c2", "output": "ok", "duration_ms": 8 },
+    { "type": "response",   "text": "Added `test_parse_empty`.", "input_tokens": 3210, "output_tokens": 48, "cached_tokens": 2800, "reasoning_tokens": 120 }
+  ]
+}
+```
+
+### Span types
+
+| Span | Fields | Description |
+| ---- | ------ | ----------- |
+| `thinking` | `text` | Internal reasoning emitted before the response (only present when the model produces it) |
+| `tool_call` | `id`, `name`, `input` | Tool invoked by the model; `input` is the JSON arguments |
+| `tool_result` | `call_id`, `output`, `duration_ms` | Result returned to the model; `call_id` matches the originating `tool_call` |
+| `response` | `text`, `input_tokens`, `output_tokens`, `cached_tokens`, `reasoning_tokens` | Final assistant reply with per-turn token breakdown |
+
+### Querying with `jq`
+
+```bash
+# Average turn duration across a session
+jq '.total_duration_ms' session.jsonl | awk '{s+=$1;n++} END{print s/n "ms avg"}'
+
+# List every tool called in order
+jq '[.spans[] | select(.type=="tool_call") | .name]' session.jsonl
+
+# Find turns where a specific tool was used
+jq 'select(.spans[].name? == "run_shell") | .user' session.jsonl
+
+# Token efficiency: cached ratio per turn
+jq '{turn, ratio: (.spans[-1].cached_tokens / .spans[-1].input_tokens)}' session.jsonl
+```
+
 ## Tracing & Observability
 
 Kapitoshka writes structured logs to `~/.kapitoshka/` after every session:

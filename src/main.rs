@@ -4,6 +4,7 @@ mod permission;
 mod session;
 mod tools;
 mod trace;
+mod trajectory;
 mod ui;
 
 use anyhow::Result;
