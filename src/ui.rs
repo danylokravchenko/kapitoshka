@@ -325,6 +325,31 @@ pub fn print_context_stats(
     let _ = execute!(out, ResetColor, Print("\n"));
 }
 
+pub fn print_todo_list(todos: &[crate::tools::todo::TodoItem]) {
+    use crate::tools::todo::TodoStatus;
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::Cyan),
+        Print("\n  Plan\n  ────\n"),
+        ResetColor,
+    );
+    for item in todos {
+        let (icon, color) = match item.status {
+            TodoStatus::Pending => ("☐", Color::DarkGrey),
+            TodoStatus::InProgress => ("⟳", Color::Yellow),
+            TodoStatus::Completed => ("✓", Color::Green),
+        };
+        let _ = execute!(
+            out,
+            SetForegroundColor(color),
+            Print(format!("  {icon} {}\n", item.content)),
+            ResetColor,
+        );
+    }
+    let _ = execute!(out, Print("\n"));
+}
+
 pub fn print_error(msg: &str) {
     let mut out = stdout();
     let _ = execute!(

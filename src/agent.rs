@@ -47,7 +47,21 @@ const TURN_TIMEOUT: Duration = Duration::from_secs(300);
 const SYSTEM_PROMPT_BASE: &str = "\
 You are kapitoshka, an expert coding agent. You help users with software engineering tasks.
 
-You have access to tools to read files, write files, list directories, and run shell commands.
+You have access to tools to read files, write files, list directories, run shell commands,
+and manage a structured task plan via `todo_write`.
+
+## Planning
+
+For any non-trivial task (more than a single lookup or one-line fix):
+1. Invoke the `todo_write` tool immediately with a numbered plan before doing any other work.
+2. As you start each step, invoke `todo_write` again to mark it `in_progress`.
+3. When a step is done, mark it `completed` before moving to the next one.
+4. If you discover the plan needs revision mid-task, invoke `todo_write` with an updated list.
+
+For simple questions or tiny one-step tasks you may skip planning.
+
+## File operations
+
 Always explore the codebase before making changes. Prefer targeted edits over full rewrites.
 After making changes, verify them by reading the modified files or running relevant commands.
 
@@ -447,29 +461,75 @@ fn suffix_prefix_len(text: &str, needle: &str) -> usize {
     0
 }
 
-/// In normal streaming mode, find the first interesting tag (`<think>` or
-/// `<tool_call>`). Returns `(safe_to_display, tag_start, which_tag)` or
-/// `(safe, tail, "")` if no complete tag is present.
+/// Find the byte position of the first `<name>` where `name` is at least two
+/// chars of `[a-z0-9_]` (snake_case tool tag). Returns `(pos, tag_end)` where
+/// `tag_end` is the index just after the closing `>`.
+fn find_tool_open(text: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            let name_start = i + 1;
+            let mut j = name_start;
+            while j < bytes.len()
+                && (bytes[j].is_ascii_lowercase() || bytes[j] == b'_' || bytes[j].is_ascii_digit())
+            {
+                j += 1;
+            }
+            let name_len = j - name_start;
+            if name_len >= 2 && j < bytes.len() && bytes[j] == b'>' {
+                return Some((i, j + 1));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Length of a trailing partial tool open tag like `<to`, `<todo_write`, or `<`.
+fn trailing_tool_tag_len(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let n = bytes.len();
+    if n == 0 {
+        return 0;
+    }
+    // Walk backward over valid tag-name chars until we hit `<` or something else.
+    let mut i = n;
+    loop {
+        if i == 0 {
+            return 0;
+        }
+        i -= 1;
+        if bytes[i] == b'<' {
+            return n - i;
+        }
+        if !bytes[i].is_ascii_lowercase() && bytes[i] != b'_' && !bytes[i].is_ascii_digit() {
+            return 0;
+        }
+    }
+}
+
+/// In normal streaming mode, find the first interesting tag (`<think>` or any
+/// snake_case tool tag like `<tool_call>`, `<todo_write>`, etc.).
+/// Returns `(safe_to_display, rest_after_tag, which_tag)` or `(safe, tail, "")`
+/// if no complete tag is present yet.
 fn scan_normal(text: &str) -> (&str, &str, &str) {
     let think_pos = text.find(THINK_OPEN);
-    let tool_pos = text.find(TOOL_CALL_TAG);
+    let tool_open = find_tool_open(text);
 
-    match (think_pos, tool_pos) {
-        (Some(t), Some(tc)) => {
-            let first = t.min(tc);
-            let tag = if t <= tc { THINK_OPEN } else { TOOL_CALL_TAG };
-            (&text[..first], &text[first + tag.len()..], tag)
+    match (think_pos, tool_open) {
+        (Some(t), Some((tc, tc_end))) => {
+            if t <= tc {
+                (&text[..t], &text[t + THINK_OPEN.len()..], THINK_OPEN)
+            } else {
+                (&text[..tc], &text[tc_end..], TOOL_CALL_TAG)
+            }
         }
         (Some(t), None) => (&text[..t], &text[t + THINK_OPEN.len()..], THINK_OPEN),
-        (None, Some(tc)) => (
-            &text[..tc],
-            &text[tc + TOOL_CALL_TAG.len()..],
-            TOOL_CALL_TAG,
-        ),
+        (None, Some((tc, tc_end))) => (&text[..tc], &text[tc_end..], TOOL_CALL_TAG),
         (None, None) => {
             // No complete tag; hold back any potential partial tag at the end.
-            let hold =
-                suffix_prefix_len(text, THINK_OPEN).max(suffix_prefix_len(text, TOOL_CALL_TAG));
+            let hold = suffix_prefix_len(text, THINK_OPEN).max(trailing_tool_tag_len(text));
             (&text[..text.len() - hold], &text[text.len() - hold..], "")
         }
     }
@@ -580,7 +640,11 @@ async fn drive_stream<R>(
                     }
                     StreamedAssistantContent::ToolCall { tool_call, .. } => {
                         state = StreamState::InToolCall;
-                        recorder.tool_call(&tool_call.id, &tool_call.function.name, Some(tool_call.function.arguments.clone()));
+                        recorder.tool_call(
+                            &tool_call.id,
+                            &tool_call.function.name,
+                            Some(tool_call.function.arguments.clone()),
+                        );
                     }
                     StreamedAssistantContent::ReasoningDelta { reasoning, .. } => {
                         recorder.feed_thinking(&reasoning);
@@ -793,6 +857,22 @@ mod tests {
         assert_eq!(safe, "a ");
         assert_eq!(tag, TOOL_CALL_TAG);
         assert_eq!(rest, "b<think>c");
+    }
+
+    #[test]
+    fn scan_normal_suppresses_named_tool_tag() {
+        let (safe, rest, tag) = scan_normal("before <todo_write>{\"todos\":[]}");
+        assert_eq!(safe, "before ");
+        assert_eq!(tag, TOOL_CALL_TAG);
+        assert_eq!(rest, "{\"todos\":[]}");
+    }
+
+    #[test]
+    fn scan_normal_holds_partial_tool_tag() {
+        let (safe, tail, tag) = scan_normal("text <todo");
+        assert_eq!(safe, "text ");
+        assert_eq!(tag, "");
+        assert_eq!(tail, "<todo");
     }
 
     // ── ContextStats ─────────────────────────────────────────────────────────
