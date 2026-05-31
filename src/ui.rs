@@ -350,6 +350,28 @@ pub fn print_todo_list(todos: &[crate::tools::todo::TodoItem]) {
     let _ = execute!(out, Print("\n"));
 }
 
+pub fn print_subagent_start(task: &str) {
+    let preview: String = task.chars().take(72).collect();
+    let ellipsis = if task.chars().count() > 72 { "…" } else { "" };
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::Cyan),
+        Print(format!("  ⇢  subagent: {preview}{ellipsis}\n")),
+        ResetColor,
+    );
+}
+
+pub fn print_subagent_done() {
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::DarkGrey),
+        Print("  ⇠  subagent done\n"),
+        ResetColor,
+    );
+}
+
 pub fn print_error(msg: &str) {
     let mut out = stdout();
     let _ = execute!(

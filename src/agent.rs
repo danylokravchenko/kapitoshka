@@ -60,6 +60,21 @@ For any non-trivial task (more than a single lookup or one-line fix):
 
 For simple questions or tiny one-step tasks you may skip planning.
 
+## Delegation
+
+Use `spawn_agent` tool to delegate self-contained sub-tasks to a focused subagent. Good candidates:
+- Investigating or summarising a specific module or file set
+- Performing a scoped rewrite or refactor on a single file
+- Running tests and summarising failures
+- Any step whose inputs and expected output can be described completely in one prompt
+
+Rules for effective delegation:
+1. The subagent has no memory of this conversation — put everything it needs in `task`.
+2. Include relevant file paths, goals, and constraints explicitly.
+3. Use `context` for role framing or additional constraints on the subagent.
+4. Do not delegate tasks that require back-and-forth with the user.
+5. Subagents cannot spawn further subagents; keep delegated tasks atomic.
+
 ## File operations
 
 Always explore the codebase before making changes. Prefer targeted edits over full rewrites.
@@ -195,7 +210,7 @@ pub async fn run_interactive(
             let agent = client
                 .agent(model)
                 .preamble(&system_prompt)
-                .tools(all_tools(dir, perm))
+                .tools(all_tools(dir, perm, model, provider, thinking))
                 .max_tokens(8192)
                 .default_max_turns(20)
                 .build();
@@ -219,7 +234,7 @@ pub async fn run_interactive(
             let mut builder = client
                 .agent(model)
                 .preamble(&system_prompt)
-                .tools(all_tools(dir, perm))
+                .tools(all_tools(dir, perm, model, provider, thinking))
                 .max_tokens(8192)
                 .default_max_turns(20);
             if thinking {
@@ -308,7 +323,7 @@ where
 
                 let turn_result = tokio::select! {
                     biased;
-                    result = drive_stream(&mut stream, thinking, &mut history, &mut ctx, &mut recorder)
+                    result = drive_stream(&mut stream, thinking, false, &mut history, &mut ctx, &mut recorder)
                         .instrument(turn_span) => Some(result),
                     _ = tokio::time::sleep(TURN_TIMEOUT) => {
                         ui::print_error("turn timed out after 5 minutes");
@@ -553,6 +568,7 @@ enum StreamState {
 async fn drive_stream<R>(
     stream: &mut rig::agent::StreamingResult<R>,
     thinking: bool,
+    silent: bool,
     history: &mut Vec<Message>,
     ctx: &mut ContextStats,
     recorder: &mut TrajectoryRecorder,
@@ -586,7 +602,12 @@ async fn drive_stream<R>(
 
                                     let (safe, rest, tag) = scan_normal(&combined);
                                     if !safe.is_empty() {
-                                        emit_text(safe, &mut response_started, &mut response_text);
+                                        emit_text(
+                                            safe,
+                                            &mut response_started,
+                                            &mut response_text,
+                                            silent,
+                                        );
                                     }
                                     match tag {
                                         THINK_OPEN => {
@@ -688,7 +709,7 @@ async fn drive_stream<R>(
                 // Flush any pending look-ahead tails.
                 match &state {
                     StreamState::Streaming { tail } if !tail.is_empty() => {
-                        emit_text(tail, &mut response_started, &mut response_text);
+                        emit_text(tail, &mut response_started, &mut response_text, silent);
                     }
                     StreamState::InThink { tail } => {
                         if thinking && !tail.is_empty() {
@@ -728,19 +749,22 @@ async fn drive_stream<R>(
     }
 
     thinker.finish();
-    if response_started {
+    if response_started && !silent {
         ui::stream_response_end();
     }
     Ok((response_text, last_usage))
 }
 
 /// Write `chunk` to the terminal and append it to `response_text`.
-fn emit_text(chunk: &str, response_started: &mut bool, response_text: &mut String) {
-    if !*response_started {
-        ui::stream_response_start();
-        *response_started = true;
+/// When `silent` is true the chunk is still accumulated but not printed.
+fn emit_text(chunk: &str, response_started: &mut bool, response_text: &mut String, silent: bool) {
+    if !silent {
+        if !*response_started {
+            ui::stream_response_start();
+            *response_started = true;
+        }
+        ui::stream_text(chunk);
     }
-    ui::stream_text(chunk);
     response_text.push_str(chunk);
 }
 
@@ -770,6 +794,86 @@ fn handle_final(
         history.extend_from_slice(new_msgs);
     }
     fin.usage()
+}
+
+/// Run a single task headlessly: build an agent, stream the response to
+/// completion, and return the final text. Used by the `SpawnAgent` tool.
+///
+/// The subagent gets only the base tools (no recursive spawn), and all tool
+/// permission prompts are auto-approved so the call is non-interactive.
+pub async fn run_task(
+    dir: &str,
+    model: &str,
+    provider: &str,
+    task: &str,
+    thinking: bool,
+) -> anyhow::Result<String> {
+    let system_prompt = build_system_prompt(dir);
+    let perm = crate::permission::auto_approve();
+
+    // Derive a unique trajectory path in the system temp directory.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let recorder_path = std::env::temp_dir().join(format!("kapitoshka_sub_{ts}.md"));
+
+    match provider {
+        "anthropic" => {
+            let client = anthropic::Client::from_env()?;
+            let agent = client
+                .agent(model)
+                .preamble(&system_prompt)
+                .tools(crate::tools::base_tools(dir, perm))
+                .max_tokens(8192)
+                .default_max_turns(20)
+                .build();
+            execute_task(agent, task, thinking, &recorder_path).await
+        }
+        _ => {
+            let client = openai::CompletionsClient::from_env()?;
+            let mut builder = client
+                .agent(model)
+                .preamble(&system_prompt)
+                .tools(crate::tools::base_tools(dir, perm))
+                .max_tokens(8192)
+                .default_max_turns(20);
+            if thinking {
+                builder = builder.additional_params(serde_json::json!({ "enable_thinking": true }));
+            }
+            let agent = builder.build();
+            execute_task(agent, task, thinking, &recorder_path).await
+        }
+    }
+}
+
+/// Internal generic driver for `run_task`. Runs the agent stream to completion
+/// without any interactive I/O.
+async fn execute_task<M>(
+    agent: rig::agent::Agent<M>,
+    task: &str,
+    thinking: bool,
+    recorder_path: &std::path::Path,
+) -> anyhow::Result<String>
+where
+    M: CompletionModel + 'static,
+    rig::agent::Agent<M>: StreamingChat<M, M::StreamingResponse>,
+{
+    let mut recorder = TrajectoryRecorder::new(recorder_path)?;
+    recorder.start_turn(task);
+    let mut history = Vec::new();
+    let mut ctx = ContextStats::new();
+    let mut stream = agent.stream_chat(task, &[] as &[Message]).await;
+    let (text, _) = drive_stream(
+        &mut stream,
+        thinking,
+        true,
+        &mut history,
+        &mut ctx,
+        &mut recorder,
+    )
+    .await?;
+    Ok(text)
 }
 
 #[cfg(test)]

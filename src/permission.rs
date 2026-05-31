@@ -8,3 +8,8 @@ pub type PermissionHandler = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 pub fn interactive() -> PermissionHandler {
     Arc::new(|tool: &str, action: &str| crate::ui::ask_permission(tool, action))
 }
+
+/// Non-interactive handler for subagents — auto-approves all tool calls.
+pub fn auto_approve() -> PermissionHandler {
+    Arc::new(|_tool: &str, _action: &str| true)
+}

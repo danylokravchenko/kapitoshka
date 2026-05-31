@@ -2,7 +2,7 @@
 
 > ![kapitoshka-mascot](./assets/kapitoshka_coding_agent.svg)
 
-A coding agent built in Rust. It connects to any OpenAI-compatible inference server, reasons about your codebase, and uses tools to read files, write files, list directories, and run shell commands.
+A coding agent built in Rust. It connects to any inference server, reasons about your codebase, and uses tools to read files, write files, list directories, and run shell commands. For complex tasks it plans its work step by step and can delegate self-contained sub-tasks to focused subagents.
 
 ## Requirements
 
@@ -107,6 +107,24 @@ Rules here are ignored by kapitoshka.
 
 Sub-headings (`###` and deeper) inside an agent section are preserved as part of that section's body, so you can structure rules however you like.
 
+## Planning
+
+For any non-trivial task Kapitoshka writes a numbered plan before starting work, marks each step in-progress as it begins, and marks it completed when done. The current plan is printed to the terminal after every update so you can follow along.
+
+For simple questions or single-step tasks planning is skipped.
+
+## Subagents
+
+Kapitoshka can delegate self-contained sub-tasks to focused subagents via the `spawn_agent` tool. A subagent is a fresh agent instance with no memory of the current conversation — you will see:
+
+```text
+  ⇢  subagent: <task description>
+  …
+  ⇠  subagent done
+```
+
+Subagents have access to all file and shell tools but cannot spawn further subagents. This keeps delegation one level deep and prevents runaway recursion.
+
 ## Tools
 
 | Tool | Description |
@@ -117,6 +135,8 @@ Sub-headings (`###` and deeper) inside an agent section are preserved as part of
 | `list_dir` | List directory contents |
 | `search_file` | Search for a literal string in a file and return matching lines with line numbers |
 | `run_shell` | Run a shell command (e.g. `cargo test`, `grep -r foo src/`). Destructive commands are blocked |
+| `spawn_agent` | Delegate a self-contained task to a subagent and return its result |
+| `todo_write` | Create or update the step-by-step plan for the current task |
 
 All file paths are resolved relative to `--dir`.
 
