@@ -1,16 +1,6 @@
-mod agent;
-mod context;
-mod models;
-mod permission;
-mod session;
-mod settings;
-mod tools;
-mod trace;
-mod trajectory;
-mod ui;
-
 use anyhow::Result;
 use clap::Parser;
+use kapitoshka::{agent, settings, trace};
 
 #[derive(Parser)]
 #[command(name = "kapitoshka", about = "A coding agent powered by rig")]

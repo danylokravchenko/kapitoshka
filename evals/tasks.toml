@@ -1,0 +1,233 @@
+# kapitoshka eval task suite
+#
+# Each [[task]] block defines one benchmark.
+# Graders are checked after the agent finishes.
+# Setup files and setup shell commands run before the agent starts.
+
+# ── File operations ───────────────────────────────────────────────────────────
+
+[[task]]
+id = "create_file"
+description = "Agent creates a file with specific content"
+prompt = "Create a file named greeting.txt containing exactly this text (no extra whitespace or newlines): Hello, world!"
+runs = 3
+
+[[task.grader]]
+kind = "file_exists"
+path = "greeting.txt"
+
+[[task.grader]]
+kind = "file_contains"
+path = "greeting.txt"
+pattern = "Hello, world!"
+
+[[task.grader]]
+kind = "tool_called"
+name = "write_file"
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "read_and_report"
+description = "Agent reads a file and includes its content in the response"
+prompt = "Read the file notes.txt and tell me what it contains."
+
+[[task.setup_files]]
+path = "notes.txt"
+content = "kapitoshka benchmark note: the answer is 42"
+
+[[task.grader]]
+kind = "tool_called"
+name = "read_file"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "42"
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "patch_file"
+description = "Agent modifies an existing file using patch_file"
+prompt = "The file src/lib.rs has a function called `add`. Add a function `subtract(a: i32, b: i32) -> i32` that returns `a - b` immediately after the `add` function. Use patch_file for the edit."
+
+[[task.setup_files]]
+path = "src/lib.rs"
+content = """pub fn add(a: i32, b: i32) -> i32 {
+    a + b
+}
+"""
+
+[[task.grader]]
+kind = "file_contains"
+path = "src/lib.rs"
+pattern = "subtract"
+
+[[task.grader]]
+kind = "file_contains"
+path = "src/lib.rs"
+pattern = "a - b"
+
+[[task.grader]]
+kind = "tool_called"
+name = "patch_file"
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "multi_file_create"
+description = "Agent creates two independent files correctly"
+prompt = "Create two files: alpha.txt containing only the word 'alpha', and beta.txt containing only the word 'beta'."
+
+[[task.grader]]
+kind = "file_contains"
+path = "alpha.txt"
+pattern = "alpha"
+
+[[task.grader]]
+kind = "file_contains"
+path = "beta.txt"
+pattern = "beta"
+
+# ── Shell operations ──────────────────────────────────────────────────────────
+
+[[task]]
+id = "shell_and_report"
+description = "Agent runs a shell command and reports its output"
+prompt = "Run the shell command `echo benchmark_marker_xk7` and tell me what it outputs."
+
+[[task.grader]]
+kind = "tool_called"
+name = "run_shell"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "benchmark_marker_xk7"
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "shell_build_check"
+description = "Agent runs a build check and reports the result"
+prompt = "Run `cargo check --quiet` in the current directory and tell me whether it succeeded or failed."
+
+[[task.setup_files]]
+path = "src/lib.rs"
+content = """pub fn hello() -> &'static str {
+    "hello"
+}
+"""
+
+[[task.setup_files]]
+path = "Cargo.toml"
+content = """[package]
+name = "eval_fixture"
+version = "0.1.0"
+edition = "2021"
+"""
+
+[[task.grader]]
+kind = "tool_called"
+name = "run_shell"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "succeed"
+label = "response_contains(succeed|succeeded)"
+
+# ── Directory operations ──────────────────────────────────────────────────────
+
+[[task]]
+id = "list_directory"
+description = "Agent lists a directory and mentions its files"
+prompt = "List the files in the src/ directory and tell me their names."
+
+[[task.setup_files]]
+path = "src/main.rs"
+content = "fn main() {}"
+
+[[task.setup_files]]
+path = "src/lib.rs"
+content = "pub fn hello() {}"
+
+[[task.grader]]
+kind = "tool_called"
+name = "list_dir"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "main.rs"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "lib.rs"
+
+# ── Planning & multi-step ─────────────────────────────────────────────────────
+
+[[task]]
+id = "plan_and_execute"
+description = "Agent plans a multi-step task and completes all steps"
+prompt = "Complete these three steps in order: (1) create a file called step1.txt with content 'done', (2) create a file called step2.txt with content 'done', (3) create a file called step3.txt with content 'done'."
+
+[[task.grader]]
+kind = "file_contains"
+path = "step1.txt"
+pattern = "done"
+
+[[task.grader]]
+kind = "file_contains"
+path = "step2.txt"
+pattern = "done"
+
+[[task.grader]]
+kind = "file_contains"
+path = "step3.txt"
+pattern = "done"
+
+[[task.grader]]
+kind = "tool_called"
+name = "todo_write"
+label = "used planning (todo_write)"
+
+# ── Search ────────────────────────────────────────────────────────────────────
+
+[[task]]
+id = "search_file"
+description = "Agent searches a file for a pattern and reports the result"
+prompt = "Search the file data.txt for the word 'needle' and tell me which line it appears on."
+
+[[task.setup_files]]
+path = "data.txt"
+content = """line one
+line two
+this line has the needle in it
+line four
+"""
+
+[[task.grader]]
+kind = "tool_called"
+name = "search_file"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "needle"
+
+# ── Efficiency guard ──────────────────────────────────────────────────────────
+
+[[task]]
+id = "efficiency_simple_read"
+description = "Agent answers a trivial question without excessive tool calls"
+prompt = "Read the file fact.txt and tell me the number it contains."
+
+[[task.setup_files]]
+path = "fact.txt"
+content = "9871"
+
+[[task.grader]]
+kind = "response_contains"
+pattern = "9871"
+
+[[task.grader]]
+kind = "max_tool_calls"
+count = 3
+label = "at most 3 tool calls for a simple read"

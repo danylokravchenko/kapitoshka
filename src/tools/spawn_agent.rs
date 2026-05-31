@@ -95,6 +95,7 @@ impl Tool for SpawnAgent {
             &self.provider,
             &full_task,
             self.thinking,
+            None,
         )
         .await
         .map_err(|e| SpawnAgentError(e.to_string()))?;

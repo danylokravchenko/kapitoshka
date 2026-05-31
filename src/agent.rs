@@ -916,16 +916,21 @@ pub async fn run_task(
     provider: &str,
     task: &str,
     thinking: bool,
+    trajectory_path: Option<&std::path::Path>,
 ) -> anyhow::Result<String> {
     let system_prompt = build_system_prompt(dir);
     let perm = crate::permission::auto_approve();
 
-    // Derive a unique trajectory path in the system temp directory.
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let recorder_path = std::env::temp_dir().join(format!("kapitoshka_sub_{ts}.md"));
+    let recorder_path = match trajectory_path {
+        Some(p) => p.to_path_buf(),
+        None => {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            std::env::temp_dir().join(format!("kapitoshka_sub_{ts}.md"))
+        }
+    };
 
     match provider {
         "anthropic" => {

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 /// A single span within a turn — one atomic event in the trajectory.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Span {
     Thinking {
@@ -35,7 +35,7 @@ pub enum Span {
 }
 
 /// One full turn: user message + all spans produced by the agent.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 pub struct TurnRecord {
     pub turn: usize,
     pub timestamp: DateTime<Utc>,

@@ -173,6 +173,79 @@ All file paths are resolved relative to `--dir`.
 
 Safe commands such as `cargo test`, `git status`, `grep`, and `rm -rf target/` pass through unaffected.
 
+## Eval Harness
+
+Kapitoshka ships a regression-testing harness that runs the agent against a fixed set of tasks and grades the results automatically.
+
+```bash
+cargo run --bin eval                                      # run all tasks
+cargo run --bin eval -- --filter create_file             # run one task by id substring
+cargo run --bin eval -- --model qwen3-0.6B --provider openai # specify model explicitly
+cargo run --bin eval -- --report results.json            # also write a JSON report
+```
+
+### Eval flags
+
+| Flag | Short | Default | Description |
+| ------ | ------- | --------- | ------------- |
+| `--suite` | `-s` | `evals/tasks.toml` | Path to the TOML task suite |
+| `--provider` | `-p` | `openai` | Model provider |
+| `--model` | `-m` | from settings | Model to evaluate |
+| `--filter` | | — | Only run tasks whose id contains this substring |
+| `--report` | | — | Write a JSON report to this file |
+| `--thinking` | | off | Enable model reasoning if supported |
+
+The binary exits with code 1 if any task fails, so it can act as a CI gate.
+
+### Task suite
+
+Tasks are defined in `evals/tasks.toml`. Each task specifies a prompt, optional setup (files or shell commands run before the agent starts), and a list of graders:
+
+```toml
+[[task]]
+id = "create_file"
+description = "Agent creates a file with specific content"
+prompt = "Create a file named greeting.txt containing exactly: Hello, world!"
+
+[[task.grader]]
+kind = "file_exists"
+path = "greeting.txt"
+
+[[task.grader]]
+kind = "file_contains"
+path = "greeting.txt"
+pattern = "Hello, world!"
+```
+
+### Grader types
+
+| Grader | What it checks |
+| ------ | -------------- |
+| `file_exists` | File was created in the task directory |
+| `file_absent` | File was not created |
+| `file_contains` | File contains a substring |
+| `shell_succeeds` | A shell command exits 0 (run in the task directory) |
+| `tool_called` | Trajectory contains at least one call to the named tool |
+| `tool_not_called` | Trajectory contains no call to the named tool |
+| `max_tool_calls` | Total tool calls ≤ limit (efficiency guard) |
+| `response_contains` | Final response contains a substring (case-insensitive) |
+| `max_duration_ms` | Task completed within a time limit |
+
+### Report format
+
+```text
+  Eval run  model: Qwen3-4B  provider: openai
+  ════════════════════════════════════════════════════════════════
+
+  ✓ create_file                     pass  3/3  1241ms
+  ✗ shell_and_report                fail  1/2   892ms
+      ✗ response_contains("benchmark_marker_xk7"): not found in response
+  ✓ read_and_report                 pass  2/2  2341ms
+
+  ════════════════════════════════════════════════════════════════
+  2/3 tasks passed  (66%)    avg 1491ms
+```
+
 ## Trajectory Collection
 
 Kapitoshka records every agent turn as a structured JSON trace alongside the session log. This is useful for offline analysis, fine-tuning dataset construction, latency profiling, and failure inspection.
