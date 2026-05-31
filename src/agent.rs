@@ -11,8 +11,10 @@ use std::time::Duration;
 use tracing::Instrument as _;
 
 use crate::context;
+use crate::models;
 use crate::permission;
 use crate::session::Session;
+use crate::settings::Settings;
 use crate::tools::all_tools;
 use crate::trajectory::TrajectoryRecorder;
 use crate::ui;
@@ -179,6 +181,71 @@ fn extract_agent_rules(contents: &str, agent_name: &str) -> String {
     }
 }
 
+/// Resolve a raw selection string (number or name) against a model list.
+/// Returns `None` if the selection is out of range or not found.
+fn resolve_model_selection(sel: &str, available: &[String]) -> Option<String> {
+    if let Ok(n) = sel.parse::<usize>() {
+        available.get(n.saturating_sub(1)).cloned()
+    } else if available.iter().any(|m| m == sel) {
+        Some(sel.to_string())
+    } else {
+        None
+    }
+}
+
+/// Prompt the user to pick one model from the list using stdin directly.
+/// Used at startup before the rustyline loop is running.
+fn pick_model_interactive(available: &[String]) -> Result<String> {
+    use std::io::BufRead as _;
+    use std::io::Write as _;
+    let mut out = std::io::stdout();
+    write!(out, "\x1b[32m  select (1-N or name): \x1b[0m")?;
+    out.flush()?;
+    let line = std::io::BufReader::new(std::io::stdin())
+        .lines()
+        .next()
+        .transpose()?
+        .unwrap_or_default();
+    resolve_model_selection(line.trim(), available)
+        .ok_or_else(|| anyhow::anyhow!("invalid selection '{}'", line.trim()))
+}
+
+/// Fetch models, show the list, and read a selection from `rl`.
+/// Returns `Some(new_model)` if a *different* model was chosen, `None` otherwise.
+async fn handle_model_command(
+    provider: &str,
+    current: &str,
+    rl: &mut DefaultEditor,
+) -> Result<Option<String>> {
+    let available = match models::fetch_models(provider).await {
+        Ok(m) if m.is_empty() => {
+            ui::print_error("no models returned by the inference engine");
+            return Ok(None);
+        }
+        Ok(m) => m,
+        Err(e) => {
+            ui::print_error(&format!("failed to fetch models: {e}"));
+            return Ok(None);
+        }
+    };
+
+    ui::print_model_list(&available, current);
+    let prompt = "\x01\x1b[32m\x02  select (1-N or name): \x01\x1b[0m\x02";
+    let sel = match rl.readline(prompt) {
+        Ok(s) => s,
+        Err(_) => return Ok(None),
+    };
+
+    match resolve_model_selection(sel.trim(), &available) {
+        Some(m) if m != current => Ok(Some(m)),
+        Some(_) => Ok(None), // same model selected — no-op
+        None => {
+            ui::print_error("invalid selection");
+            Ok(None)
+        }
+    }
+}
+
 pub async fn run_interactive(
     dir: &str,
     model: &str,
@@ -188,11 +255,10 @@ pub async fn run_interactive(
     session_id: &str,
     resume: Option<&std::path::Path>,
 ) -> Result<()> {
-    let session = Session::new(dir, model)?;
     let session_span = tracing::info_span!("session", id = %session_id, dir = %dir, model = %model);
 
     // Load prior history + scratchpad when resuming a crashed or previous session.
-    let (initial_history, initial_scratchpad) = match resume {
+    let (mut history, mut scratchpad) = match resume {
         Some(path) => {
             let (h, s) = Session::load_state(path)?;
             tracing::info!(path = %path.display(), turns = h.len(), "resumed session state");
@@ -201,63 +267,104 @@ pub async fn run_interactive(
         None => (Vec::new(), String::new()),
     };
 
-    let system_prompt = build_system_prompt(dir);
-
-    match provider {
-        "anthropic" => {
-            let client = anthropic::Client::from_env()?;
-            let perm = permission::interactive();
-            let agent = client
-                .agent(model)
-                .preamble(&system_prompt)
-                .tools(all_tools(dir, perm, model, provider, thinking))
-                .max_tokens(8192)
-                .default_max_turns(20)
-                .build();
-            run_loop(
-                agent,
-                client,
-                dir,
-                model,
-                thinking,
-                context_size,
-                session,
-                initial_history,
-                initial_scratchpad,
-            )
-            .instrument(session_span)
-            .await
-        }
-        _ => {
-            let client = openai::CompletionsClient::from_env()?;
-            let perm = permission::interactive();
-            let mut builder = client
-                .agent(model)
-                .preamble(&system_prompt)
-                .tools(all_tools(dir, perm, model, provider, thinking))
-                .max_tokens(8192)
-                .default_max_turns(20);
-            if thinking {
-                // Pass enable_thinking to the inference server via the flattened
-                // additional_params field (supported by vLLM, some Ollama builds, etc.).
-                builder = builder.additional_params(serde_json::json!({ "enable_thinking": true }));
+    // If no model is saved yet, fetch the list and let the user pick before starting.
+    let mut current_model = if model.is_empty() {
+        match models::fetch_models(provider).await {
+            Ok(available) if !available.is_empty() => {
+                ui::print_model_list(&available, "");
+                pick_model_interactive(&available)?
             }
-            let agent = builder.build();
-            run_loop(
-                agent,
-                client,
-                dir,
-                model,
-                thinking,
-                context_size,
-                session,
-                initial_history,
-                initial_scratchpad,
-            )
-            .instrument(session_span)
-            .await
+            Ok(_) => {
+                anyhow::bail!("inference engine returned no models — set a model and retry");
+            }
+            Err(e) => {
+                anyhow::bail!("failed to fetch models: {e}");
+            }
+        }
+    } else {
+        model.to_string()
+    };
+
+    let mut session = Session::new(dir, &current_model)?;
+    let mut first_start = true;
+
+    loop {
+        let system_prompt = build_system_prompt(dir);
+
+        let new_model = match provider {
+            "anthropic" => {
+                let client = anthropic::Client::from_env()?;
+                let perm = permission::interactive();
+                let agent = client
+                    .agent(current_model.as_str())
+                    .preamble(&system_prompt)
+                    .tools(all_tools(dir, perm, &current_model, provider, thinking))
+                    .max_tokens(8192)
+                    .default_max_turns(20)
+                    .build();
+                run_loop(
+                    agent,
+                    client,
+                    dir,
+                    &current_model,
+                    provider,
+                    thinking,
+                    context_size,
+                    &mut session,
+                    &mut history,
+                    &mut scratchpad,
+                    first_start,
+                )
+                .instrument(session_span.clone())
+                .await?
+            }
+            _ => {
+                let client = openai::CompletionsClient::from_env()?;
+                let perm = permission::interactive();
+                let mut builder = client
+                    .agent(current_model.as_str())
+                    .preamble(&system_prompt)
+                    .tools(all_tools(dir, perm, &current_model, provider, thinking))
+                    .max_tokens(8192)
+                    .default_max_turns(20);
+                if thinking {
+                    builder =
+                        builder.additional_params(serde_json::json!({ "enable_thinking": true }));
+                }
+                let agent = builder.build();
+                run_loop(
+                    agent,
+                    client,
+                    dir,
+                    &current_model,
+                    provider,
+                    thinking,
+                    context_size,
+                    &mut session,
+                    &mut history,
+                    &mut scratchpad,
+                    first_start,
+                )
+                .instrument(session_span.clone())
+                .await?
+            }
+        };
+
+        first_start = false;
+
+        match new_model {
+            None => break,
+            Some(m) => {
+                let mut settings = Settings::load();
+                if let Err(e) = settings.set_model(&m) {
+                    tracing::warn!(error = %e, "failed to save model to settings");
+                }
+                current_model = m;
+            }
         }
     }
+
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -266,12 +373,14 @@ async fn run_loop<M, C>(
     client: C,
     dir: &str,
     model: &str,
+    provider: &str,
     thinking: bool,
     context_size: u64,
-    mut session: Session,
-    initial_history: Vec<Message>,
-    initial_scratchpad: String,
-) -> Result<()>
+    session: &mut Session,
+    history: &mut Vec<Message>,
+    scratchpad: &mut String,
+    first_start: bool,
+) -> Result<Option<String>>
 where
     M: CompletionModel + 'static,
     Agent<M>: StreamingChat<M, M::StreamingResponse>,
@@ -279,16 +388,14 @@ where
     C::CompletionModel: CompletionModel + 'static,
 {
     let session_path = session.path.display().to_string();
-    ui::print_banner(model, dir, &session_path, thinking);
+    if first_start {
+        ui::print_banner(model, dir, &session_path, thinking);
+    } else {
+        ui::print_model_switch(model, dir, &session_path, thinking);
+    }
 
     let mut recorder = TrajectoryRecorder::new(&session.path)?;
 
-    // Conversation history managed manually so we can append new messages
-    // from each turn's FinalResponse.
-    let mut history = initial_history;
-    // Scratchpad accumulates summaries from compaction and is prepended to
-    // every request so the model retains context across compaction boundaries.
-    let mut scratchpad = initial_scratchpad;
     let mut ctx = ContextStats::new();
     let mut rl = DefaultEditor::new()?;
 
@@ -301,7 +408,14 @@ where
                     continue;
                 }
                 if line == "exit" || line == "quit" {
-                    break;
+                    return Ok(None);
+                }
+                if line == "/model" {
+                    if let Some(new_model) = handle_model_command(provider, model, &mut rl).await? {
+                        ui::print_model_changed(&new_model);
+                        return Ok(Some(new_model));
+                    }
+                    continue;
                 }
                 let _ = rl.add_history_entry(&line);
 
@@ -318,12 +432,12 @@ where
                 // Prepend the scratchpad as a pseudo-message so the model
                 // retains summarised context even after compaction.
                 // fin.history() returns only NEW messages so history stays clean.
-                let effective_history = build_effective_history(&history, &scratchpad);
+                let effective_history = build_effective_history(history, scratchpad);
                 let mut stream = agent.stream_chat(line.as_str(), &effective_history).await;
 
                 let turn_result = tokio::select! {
                     biased;
-                    result = drive_stream(&mut stream, thinking, false, &mut history, &mut ctx, &mut recorder)
+                    result = drive_stream(&mut stream, thinking, false, history, &mut ctx, &mut recorder)
                         .instrument(turn_span) => Some(result),
                     _ = tokio::time::sleep(TURN_TIMEOUT) => {
                         ui::print_error("turn timed out after 5 minutes");
@@ -341,7 +455,7 @@ where
                             session.log_agent(&text)?;
 
                             // 1. Compress old tool results (cheap, no model call).
-                            context::compress_tool_results(&mut history);
+                            context::compress_tool_results(history);
 
                             // 2. Summarise + compact if context is filling up.
                             let compacted =
@@ -355,10 +469,7 @@ where
                                     );
                                     ui::print_compacting();
                                     let did_compact = context::compact_with_summary(
-                                        &mut history,
-                                        &mut scratchpad,
-                                        &client,
-                                        model,
+                                        history, scratchpad, &client, model,
                                     )
                                     .await
                                     .unwrap_or(false);
@@ -374,7 +485,7 @@ where
                                 };
 
                             // 3. Persist conversation state so a crash loses at most one turn.
-                            if let Err(e) = session.save_state(&history, &scratchpad) {
+                            if let Err(e) = session.save_state(history, scratchpad) {
                                 tracing::warn!(error = %e, "failed to save session state");
                             }
 
@@ -396,12 +507,10 @@ where
                     }
                 }
             }
-            Err(ReadlineError::Eof | ReadlineError::Interrupted) => break,
+            Err(ReadlineError::Eof | ReadlineError::Interrupted) => return Ok(None),
             Err(e) => return Err(e.into()),
         }
     }
-
-    Ok(())
 }
 
 /// Streams reasoning text to the terminal in real time with a `│ ` border on

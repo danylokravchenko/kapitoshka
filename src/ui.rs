@@ -383,6 +383,60 @@ pub fn print_error(msg: &str) {
 }
 
 /// Called when the user cancels a turn mid-stream with Ctrl+C.
+pub fn print_model_list(models: &[String], current: &str) {
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::Cyan),
+        Print("\n  Available models\n  ─────────────────\n"),
+        ResetColor,
+    );
+    for (i, m) in models.iter().enumerate() {
+        let marker = if m == current { " ◀" } else { "" };
+        let color = if m == current {
+            Color::White
+        } else {
+            Color::DarkGrey
+        };
+        let _ = execute!(
+            out,
+            SetForegroundColor(color),
+            Print(format!("  [{:>2}] {m}{marker}\n", i + 1)),
+            ResetColor,
+        );
+    }
+    let _ = execute!(out, Print("\n"));
+}
+
+/// Compact header shown when switching models mid-session (no animation).
+pub fn print_model_switch(model: &str, dir: &str, session_path: &str, thinking: bool) {
+    let thinking_label = if thinking { "  (thinking on)\n" } else { "" };
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        Print("\n"),
+        SetForegroundColor(Color::Cyan),
+        Print(format!("  ─── switched to {model} ───\n")),
+        ResetColor,
+        SetForegroundColor(Color::DarkGrey),
+        Print(format!("  dir   : {dir}\n")),
+        Print(format!("  log   : {session_path}\n")),
+        Print(thinking_label),
+        Print("\n"),
+        ResetColor,
+    );
+}
+
+pub fn print_model_changed(model: &str) {
+    let mut out = stdout();
+    let _ = execute!(
+        out,
+        SetForegroundColor(Color::Cyan),
+        Print(format!("  ✓  model → {model}\n")),
+        ResetColor,
+    );
+}
+
 pub fn print_cancelled() {
     let mut out = stdout();
     let _ = execute!(

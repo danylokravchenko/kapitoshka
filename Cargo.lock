@@ -1167,6 +1167,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
+ "reqwest",
  "rig-core",
  "rustyline",
  "serde",

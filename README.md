@@ -19,7 +19,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:8080/v1  # omit to use OpenAI directly
 ## Usage
 
 ```bash
-cargo run -- --dir /path/to/project --model my-model
+cargo run -- --dir /path/to/project
 ```
 
 ### Options
@@ -28,10 +28,28 @@ cargo run -- --dir /path/to/project --model my-model
 | ------ | ------- | --------- | ------------- |
 | `--dir` | `-d` | `.` | Working directory (root for all file operations) |
 | `--provider` | `-p` | `openai` | Model provider |
-| `--model` | `-m` | `Qwen3-0.6B` | Model name to use |
 | `--thinking` | | off | Display the model's internal reasoning (requires model support) |
 | `--context-size` | | `0` | Context window size in tokens — enables fill-% display and automatic compaction |
 | `--resume` | | — | Path to a `.json` session state file to restore history from a previous session |
+
+### Model selection
+
+The active model is stored in `~/.config/kapitoshka/settings.json` and persists across sessions. To change it, type `/model` at the prompt:
+
+```text
+❯ /model
+
+  Available models
+  ─────────────────
+  [ 1] Qwen3-0.6B ◀
+  [ 2] Qwen3-4B
+  [ 3] Qwen3-14B
+
+  select (1-N or name): 2
+  ✓  model → Qwen3-4B
+```
+
+The agent restarts with the new model while keeping your conversation history intact.
 
 ### Context management
 
@@ -66,7 +84,7 @@ Kapitoshka saves conversation state (history + compaction scratchpad) to a JSON 
 To resume a previous session:
 
 ```bash
-kapitoshka --resume ~/.kapitoshka/sessions/2024-01-15-143022.json --dir /path/to/project --model my-model
+kapitoshka --resume ~/.kapitoshka/sessions/2024-01-15-143022.json --dir /path/to/project
 ```
 
 Pressing **Ctrl+C** during a running turn cancels that turn and returns to the prompt without exiting.
@@ -228,7 +246,7 @@ Set `OTEL_EXPORTER_OTLP_ENDPOINT` to export spans to any OTel-compatible backend
 ```bash
 export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
 export OTEL_SERVICE_NAME=kapitoshka   # optional, defaults to "kapitoshka"
-kapitoshka --dir /path/to/project --model my-model
+kapitoshka --dir /path/to/project
 ```
 
 Spans emitted per session:

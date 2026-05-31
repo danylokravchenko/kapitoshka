@@ -1,7 +1,9 @@
 mod agent;
 mod context;
+mod models;
 mod permission;
 mod session;
+mod settings;
 mod tools;
 mod trace;
 mod trajectory;
@@ -16,10 +18,6 @@ struct Cli {
     /// Working directory for the agent
     #[arg(short, long, default_value = ".")]
     dir: String,
-
-    /// Model to use
-    #[arg(short, long, default_value = "Qwen3-0.6B")]
-    model: String,
 
     /// Provider backend: "openai" (default, works with any OpenAI-compatible server) or "anthropic"
     #[arg(short, long, default_value = "openai")]
@@ -44,6 +42,8 @@ async fn main() -> Result<()> {
 
     let _trace_guards = trace::init();
 
+    let model = settings::Settings::load().model.unwrap_or_default();
+
     // Short hex ID derived from the current timestamp for log correlation.
     let session_id = format!(
         "{:x}",
@@ -56,14 +56,14 @@ async fn main() -> Result<()> {
     tracing::info!(
         session = %session_id,
         dir = %cli.dir,
-        model = %cli.model,
+        model = %model,
         thinking = cli.thinking,
         "starting agent"
     );
 
     agent::run_interactive(
         &cli.dir,
-        &cli.model,
+        &model,
         &cli.provider,
         cli.thinking,
         cli.context_size,
