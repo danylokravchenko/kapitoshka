@@ -1,10 +1,12 @@
 pub mod agent;
+pub mod completer;
 pub mod context;
 pub mod eval;
 pub mod models;
 pub mod permission;
 pub mod session;
 pub mod settings;
+pub mod skills;
 pub mod tools;
 pub mod trace;
 pub mod trajectory;

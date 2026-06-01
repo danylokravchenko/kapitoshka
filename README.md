@@ -51,6 +51,65 @@ The active model is stored in `~/.config/kapitoshka/settings.json` and persists 
 
 The agent restarts with the new model while keeping your conversation history intact.
 
+### Skills
+
+Skills are reusable prompt templates invoked from the REPL with a `/command`. Typing `/` and pressing **Tab** shows all available skills with their descriptions; a ghost-text hint appears as you type.
+
+#### Defining skills
+
+Create a `.md` file anywhere in one of two locations:
+
+| Location | Scope |
+| -------- | ----- |
+| `~/.kapitoshka/skills/` | Global — available in every project |
+| `<project>/skills/` | Project-local — overrides a global skill with the same name |
+
+The file name (without `.md`) becomes the slash command:
+
+```text
+~/.kapitoshka/skills/review.md   →  /review
+my-project/skills/deploy.md      →  /deploy
+```
+
+#### File format
+
+```markdown
+---
+description = "review current git diff for bugs"
+---
+Review the git diff in `{dir}`. Run `git diff HEAD` and `git diff --cached`.
+For each finding state the file, the problem, and a concrete fix.
+Skip style nits — flag real problems only.
+```
+
+The front-matter block (delimited by `---`) is optional. If present, `description` is shown in Tab-completion. Everything after the closing `---` is the prompt template.
+
+**Template variables** substituted at invocation time:
+
+| Variable | Value |
+| -------- | ----- |
+| `{dir}` | The working directory passed to `--dir` |
+| `{args}` | Any text after the command name (e.g. `/explain src/lib.rs` → `src/lib.rs`) |
+
+#### Example: project-local deploy skill
+
+`my-project/skills/deploy.md`:
+
+```markdown
+---
+description = "build a release binary and show its size"
+---
+In `{dir}`, run `cargo build --release` and then report the size of the
+resulting binary with `ls -lh target/release/`. If the build fails,
+show the first compiler error and suggest a fix.
+```
+
+Usage:
+
+```text
+❯ /deploy
+```
+
 ### Context management
 
 Kapitoshka tracks context window usage and manages history automatically.

@@ -5,16 +5,19 @@ use rig::client::{CompletionClient, ProviderClient};
 use rig::completion::{CompletionModel, Message, Usage};
 use rig::providers::{anthropic, openai};
 use rig::streaming::{StreamedAssistantContent, StreamingChat};
-use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
+use rustyline::history::DefaultHistory;
+use rustyline::{CompletionType, Config, Editor};
 use std::time::Duration;
 use tracing::Instrument as _;
 
+use crate::completer::KapHelper;
 use crate::context;
 use crate::models;
 use crate::permission;
 use crate::session::Session;
 use crate::settings::Settings;
+use crate::skills;
 use crate::tools::all_tools;
 use crate::trajectory::TrajectoryRecorder;
 use crate::ui;
@@ -212,10 +215,10 @@ fn pick_model_interactive(available: &[String]) -> Result<String> {
 
 /// Fetch models, show the list, and read a selection from `rl`.
 /// Returns `Some(new_model)` if a *different* model was chosen, `None` otherwise.
-async fn handle_model_command(
+async fn handle_model_command<H: rustyline::Helper>(
     provider: &str,
     current: &str,
-    rl: &mut DefaultEditor,
+    rl: &mut Editor<H, DefaultHistory>,
 ) -> Result<Option<String>> {
     let available = match models::fetch_models(provider).await {
         Ok(m) if m.is_empty() => {
@@ -255,6 +258,7 @@ pub async fn run_interactive(
     session_id: &str,
     resume: Option<&std::path::Path>,
 ) -> Result<()> {
+    let loaded_skills = skills::load(dir);
     let session_span = tracing::info_span!("session", id = %session_id, dir = %dir, model = %model);
 
     // Load prior history + scratchpad when resuming a crashed or previous session.
@@ -310,6 +314,7 @@ pub async fn run_interactive(
                     provider,
                     thinking,
                     context_size,
+                    &loaded_skills,
                     &mut session,
                     &mut history,
                     &mut scratchpad,
@@ -340,6 +345,7 @@ pub async fn run_interactive(
                     provider,
                     thinking,
                     context_size,
+                    &loaded_skills,
                     &mut session,
                     &mut history,
                     &mut scratchpad,
@@ -376,6 +382,7 @@ async fn run_loop<M, C>(
     provider: &str,
     thinking: bool,
     context_size: u64,
+    skills: &[skills::Skill],
     session: &mut Session,
     history: &mut Vec<Message>,
     scratchpad: &mut String,
@@ -397,7 +404,11 @@ where
     let mut recorder = TrajectoryRecorder::new(&session.path)?;
 
     let mut ctx = ContextStats::new();
-    let mut rl = DefaultEditor::new()?;
+    let rl_config = Config::builder()
+        .completion_type(CompletionType::List)
+        .build();
+    let mut rl: Editor<KapHelper, DefaultHistory> = Editor::with_config(rl_config)?;
+    rl.set_helper(Some(KapHelper::new(skills.to_vec())));
 
     loop {
         let readline_prompt = "\x01\x1b[32m\x02❯ \x01\x1b[0m\x02";
@@ -419,8 +430,11 @@ where
                 }
                 let _ = rl.add_history_entry(&line);
 
-                session.log_user(&line)?;
-                recorder.start_turn(&line);
+                // Expand skill invocations into structured prompts.
+                let effective_line = skills::resolve(skills, &line, dir).unwrap_or(line.clone());
+
+                session.log_user(&effective_line)?;
+                recorder.start_turn(&effective_line);
                 ui::print_working();
 
                 let turn_span = tracing::info_span!(
@@ -433,7 +447,9 @@ where
                 // retains summarised context even after compaction.
                 // fin.history() returns only NEW messages so history stays clean.
                 let effective_history = build_effective_history(history, scratchpad);
-                let mut stream = agent.stream_chat(line.as_str(), &effective_history).await;
+                let mut stream = agent
+                    .stream_chat(effective_line.as_str(), &effective_history)
+                    .await;
 
                 let turn_result = tokio::select! {
                     biased;
