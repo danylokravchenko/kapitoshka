@@ -1,6 +1,7 @@
 pub mod fs;
 pub mod shell;
 pub mod spawn_agent;
+pub mod squash;
 pub mod todo;
 
 use crate::permission::PermissionHandler;
